@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import base64
 import io
 import random
@@ -120,7 +121,9 @@ def qwen_mask_instruction(text: str, fill: str, names: list[str]) -> str:
     room = (" The white area includes some space around it so the changed shape can grow into it; fill any leftover "
             "space with the surrounding background.") if ENLARGE_RX.search(text or "") else ""
     return (f"In image 1, {text.strip()} (this concerns {what}). Image 2 is a mask: change only its white area.{room} "
-            "Keep the same person, face, pose, clothing elsewhere, background and lighting exactly as in image 1.")
+            "Do only what is asked: do not add, remove or change clothing, accessories, materials or colors that were "
+            "not mentioned (for example, bare legs stay bare). Keep the same person, face, pose, background and "
+            "lighting exactly as in image 1.")
 
 
 def expand_intent(text: str, w: int, h: int) -> tuple[str, str, str] | None:
@@ -654,7 +657,21 @@ class Engine:
             return
 
         if req.labels:
-            infos = [{"label": l.strip().lower(), "ko": "", "parent": None} for l in req.labels if l.strip()]
+            from .segments import korean_to_label
+            from .translate import has_korean
+            infos = []
+            for l in (x.strip() for x in req.labels if x.strip()):
+                en = l.lower()
+                if has_korean(l):
+                    en = korean_to_label(l) or ""
+                    vlm = self.vlm_file()
+                    if not en and vlm:          # anything the word list does not know: ask Qwen3-VL
+                        outputs = await self.comfy.run_outputs(workflows.rewrite_text(
+                            vlm, f"Give the English noun phrase (1-3 words) for this thing in a photo: {l}. Reply with it only."))
+                        en = re.sub(r"[^a-zA-Z '\-]", "", output_text(outputs)).strip().lower()
+                    if not en:
+                        raise ComfyError(f"'{l}'을(를) 찾을 단어로 바꾸지 못했어요. 영어로 적어 주세요.")
+                infos.append({"label": en, "ko": l if has_korean(l) else "", "parent": None})
         else:
             infos = []
             vlm = self.vlm_file()

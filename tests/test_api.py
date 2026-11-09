@@ -171,3 +171,20 @@ def test_token_link_sets_cookie_and_redirects_relative(settings, fake, monkeypat
         assert r.status_code == 303 and r.headers["location"] == "/"
         assert "gs_token=s3cret" in r.headers["set-cookie"] and "Secure" in r.headers["set-cookie"]
         assert c.get("/api/status", headers={**h, "cookie": "gs_token=s3cret"}).status_code == 200
+
+
+def test_deleting_versions(client):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo"}).json()["id"])
+    root = j["result_ids"][0]
+    ids = [root]
+    for p in ("a", "b"):
+        e = wait_job(client, client.post("/api/edit", json={"image_id": ids[-1], "mode": "variation", "prompt": p}).json()["id"])
+        ids.append(e["result_ids"][0])
+    # removing the first version keeps the others together as one set
+    assert client.delete(f"/api/images/{root}").json()["deleted"]
+    vs = client.get(f"/api/images/{ids[1]}").json()["versions"]
+    assert [v["id"] for v in vs] == ids[1:] and vs[0]["root_id"] == ids[1]
+    assert any(r["id"] == ids[1] for r in client.get("/api/images?roots_only=true").json())
+    # gallery X removes the whole set
+    assert client.delete(f"/api/images/{ids[2]}?all_versions=true").json()["deleted"] == 2
+    assert client.get(f"/api/images/{ids[1]}").status_code == 404

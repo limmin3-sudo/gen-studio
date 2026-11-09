@@ -149,10 +149,22 @@ class Library:
             size = im.size
         return {"path": str(dest), "format": fmt, "width": size[0], "height": size[1], "bytes": dest.stat().st_size}
 
+    def delete_versions(self, iid: str) -> int:
+        """Delete an image together with all its versions."""
+        ids = [r["id"] for r in self.versions(iid)]
+        return sum(1 for x in ids if self.delete(x))
+
     def delete(self, iid: str) -> bool:
         rec = self._items.pop(iid, None)
         if not rec:
             return False
+        if rec["root_id"] == iid:
+            # the first version goes away: the earliest remaining one becomes the new first, so the set stays together
+            rest = sorted((r for r in self._items.values() if r["root_id"] == iid), key=lambda r: r["created_at"])
+            if rest:
+                new_root = rest[0]["id"]
+                for r in rest:
+                    self.update(r["id"], root_id=new_root, **({"parent_id": None} if r["id"] == new_root else {}))
         p = self.root / rec["file"]
         for f in (p, p.with_suffix(".json"), p.with_suffix(".mask.png"), p.with_suffix(".segments.json"),
                   self.root / ".thumbs" / f"{iid}.jpg"):

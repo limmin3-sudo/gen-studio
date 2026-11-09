@@ -67,8 +67,8 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .imgbox canvas{position:absolute;inset:0;width:100%;height:100%;opacity:.5;pointer-events:none;touch-action:none}
 .editor.tool-brush .imgbox canvas{pointer-events:auto;cursor:crosshair}
 #segLayer{position:absolute;inset:0;pointer-events:none}
-.seg-ov{position:absolute;inset:0;background:var(--accent);opacity:.32;-webkit-mask-size:100% 100%;mask-size:100% 100%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;transition:opacity .12s}
-.seg-ov.sel{opacity:.55}
+.seg-ov{position:absolute;inset:0;background:var(--accent);opacity:.2;-webkit-mask-size:100% 100%;mask-size:100% 100%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;transition:opacity .12s}
+.seg-ov.sel{opacity:.42}
 .editor.tool-seg .imgbox{cursor:pointer}
 .segs{list-style:none;margin:0;padding:0;display:grid;gap:4px}
 .segs ul{list-style:none;margin:4px 0 0;padding:0 0 0 46px;display:grid;gap:4px}
@@ -92,8 +92,13 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .busy .cancel{font-size:13px;color:var(--muted);text-decoration:underline}
 
 .rail{position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:10px;max-height:100%;overflow:auto;padding:4px}
-.rail button{width:64px;border-radius:8px;overflow:hidden;outline:2px solid transparent;outline-offset:1px;background:var(--chip);box-shadow:var(--shadow);flex:none}
-.rail button.cur{outline-color:var(--accent)}
+.rail .vw,.cw{position:relative;flex:none;display:block}
+.vx{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.62);color:#fff;font-size:15px;line-height:22px;text-align:center;opacity:0;transition:opacity .12s;z-index:1}
+.vw:hover .vx,.cw:hover .vx,.vx:focus-visible{opacity:1}
+.vx:hover{background:var(--danger)}
+@media (hover:none){.vx{opacity:.85}}
+.rail button.vt{width:64px;border-radius:8px;overflow:hidden;outline:2px solid transparent;outline-offset:1px;background:var(--chip);box-shadow:var(--shadow);flex:none}
+.rail button.vt.cur{outline-color:var(--accent)}
 .rail img{width:100%;display:block}
 
 .promptwrap{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding-block:8px 16px;max-width:940px;width:100%;margin:0 auto}

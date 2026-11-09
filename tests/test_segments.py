@@ -170,3 +170,11 @@ def test_library_restarts_with_segment_files(client, settings):
     segment(client, img)
     lib = Library(settings.output_dir)          # what happens on the next start
     assert lib.get(img) is not None and all(isinstance(r, dict) for r in lib.list())
+
+
+def test_find_by_korean_word(client, fake):
+    from genstudio.segments import korean_to_label
+    assert korean_to_label("스타킹") == "stockings" and korean_to_label("검은 스타킹") is None
+    img = imported(client, 512, 768)
+    segs = segment(client, img, labels=["견장"])
+    assert [s["label"] for s in segs] == ["epaulets", "epaulets"] and segs[0]["ko"] == "견장"

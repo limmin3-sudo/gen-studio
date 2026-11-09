@@ -18,8 +18,9 @@ List the distinct visible things in the image as a JSON array. Each item:
 {"label": "<1-4 word English noun phrase that names it precisely, e.g. 'blonde hair', 'white collared shirt'>",
  "ko": "<the same in natural Korean>",
  "parent": "<label of the thing it belongs to, or null>"}
-Include every person (as "woman", "man", "girl", "boy" or "person"), then their hair, face, each clothing item,
-accessories and anything they hold, then notable objects, furniture, vehicles, and finally "background".
+Include every person (as "woman", "man", "girl", "boy" or "person"), then their hair, face, each clothing item
+(top, bottom, legwear such as stockings, tights or socks, and shoes), visible body parts people often edit (legs,
+arms), accessories and anything they hold, then notable objects, furniture, vehicles, and finally "background".
 Use one item per kind of thing even if there are several (e.g. one "epaulets" item for both).
 At most 16 items. Reply with the JSON array only."""
 
@@ -32,6 +33,35 @@ FALLBACK_LABELS = [
     ("table", "테이블", None), ("plant", "식물", None), ("car", "자동차", None), ("building", "건물", None),
     ("sky", "하늘", None), ("background", "배경", None),
 ]
+
+# Korean words people type into the "find" box -> what SAM 3 understands
+KO_LABELS = {
+    "사람": "person", "여자": "woman", "여성": "woman", "남자": "man", "남성": "man", "아이": "child", "머리": "hair",
+    "머리카락": "hair", "얼굴": "face", "눈": "eyes", "입술": "lips", "목": "neck", "팔": "arms", "손": "hands",
+    "다리": "legs", "허벅지": "thighs", "발": "feet", "가슴": "chest", "배": "belly", "허리": "waist", "엉덩이": "hips",
+    "셔츠": "shirt", "블라우스": "blouse", "티셔츠": "t-shirt", "재킷": "jacket", "자켓": "jacket", "코트": "coat",
+    "후드": "hoodie", "니트": "sweater", "스웨터": "sweater", "원피스": "dress", "드레스": "dress", "치마": "skirt",
+    "스커트": "skirt", "바지": "pants", "청바지": "jeans", "반바지": "shorts", "레깅스": "leggings", "스타킹": "stockings",
+    "타이츠": "tights", "양말": "socks", "신발": "shoes", "구두": "high heels", "힐": "high heels", "부츠": "boots",
+    "운동화": "sneakers", "속옷": "underwear", "브라": "bra", "수영복": "swimsuit", "넥타이": "tie", "벨트": "belt",
+    "모자": "hat", "안경": "glasses", "선글라스": "sunglasses", "목걸이": "necklace", "귀걸이": "earrings",
+    "팔찌": "bracelet", "시계": "watch", "반지": "ring", "장갑": "gloves", "가방": "bag", "견장": "epaulets",
+    "명찰": "name tag", "배지": "badge", "배경": "background", "하늘": "sky", "벽": "wall", "바닥": "floor",
+    "창문": "window", "의자": "chair", "테이블": "table", "책상": "desk", "소파": "sofa", "침대": "bed", "식물": "plant",
+    "꽃": "flowers", "자동차": "car", "건물": "building", "나무": "tree", "물": "water", "컵": "cup", "휴대폰": "phone",
+}
+
+
+def korean_to_label(word: str) -> str | None:
+    w = word.strip()
+    if w in KO_LABELS:
+        return KO_LABELS[w]
+    for ko, en in sorted(KO_LABELS.items(), key=lambda kv: -len(kv[0])):
+        if ko in w:
+            rest = w.replace(ko, "").strip()
+            return en if not rest else None
+    return None
+
 
 MIN_AREA = 0.0008      # ignore specks smaller than this share of the image
 DUP_IOU = 0.92

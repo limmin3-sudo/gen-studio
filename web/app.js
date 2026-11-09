@@ -239,7 +239,7 @@ const Gallery = (() => {
     let items = [];
     try { items = await api.get('/api/images?limit=500&roots_only=true'); } catch (e) { toast(e.message); }
     $('#galCount').textContent = items.length ? `${items.length}개` : '';
-    grid.innerHTML = items.length ? items.map(r => `<a class="card" href="#edit=${r.id}"><img loading="lazy" src="${thumbUrl(r.id)}" alt=""><span class="cap">${esc(r.kind === 'import' ? '불러온 이미지 · ' + (r.original_name || '') : r.prompt || '')}</span></a>`).join('')
+    grid.innerHTML = items.length ? items.map(r => `<span class="cw"><a class="card" href="#edit=${r.id}"><img loading="lazy" src="${thumbUrl(r.id)}" alt=""><span class="cap">${esc(r.kind === 'import' ? '불러온 이미지 · ' + (r.original_name || '') : r.prompt || '')}</span></a><button class="vx" data-gdel="${r.id}" title="이 이미지와 모든 버전 삭제" aria-label="삭제">×</button></span>`).join('')
       : `<div class="empty" style="grid-column:1/-1"><b>아직 이미지가 없어요</b><span>생성 탭에서 만들거나, 이미지를 이 창에 끌어다 놓으세요.</span></div>`;
   }
   return {show};
@@ -288,6 +288,15 @@ const LoraPage = (() => {
     const id = e.target.closest('[data-id]').dataset.id;
     if (delArm !== id) { delArm = id; toast('한 번 더 누르면 목록과 파일에서 삭제해요'); setTimeout(() => delArm = '', 3000); return; }
     await api.del(`/api/loras/${id}?delete_file=true`); toast('삭제했어요'); show();
+  });
+  let armed = '';
+  $('#galGrid').addEventListener('click', async e => {
+    const x = e.target.closest('[data-gdel]'); if (!x) return;
+    e.preventDefault();
+    if (armed !== x.dataset.gdel) { armed = x.dataset.gdel; toast('한 번 더 누르면 이 이미지와 모든 버전을 삭제해요'); setTimeout(() => armed = '', 3000); return; }
+    armed = '';
+    try { const r = await api.del(`/api/images/${x.dataset.gdel}?all_versions=true`); toast(`${r.deleted}장 삭제했어요`); } catch (err) { toast(err.message); }
+    Gallery.show();
   });
   return {show};
 })();
@@ -348,9 +357,23 @@ const Editor = (() => {
   }
 
   function paintRail() {
-    rail.innerHTML = versions.map((v, i) => `<button class="${v.id === rec.id ? 'cur' : ''}" data-id="${v.id}" title="${i + 1}. ${esc(v.label || '')}" aria-label="버전 ${i + 1}: ${esc(v.label || '')}"><img src="${thumbUrl(v.id)}" alt=""></button>`).join('');
+    rail.innerHTML = versions.map((v, i) => `<span class="vw"><button class="vt ${v.id === rec.id ? 'cur' : ''}" data-id="${v.id}" title="${i + 1}. ${esc(v.label || '')}" aria-label="버전 ${i + 1}: ${esc(v.label || '')}"><img src="${thumbUrl(v.id)}" alt=""></button><button class="vx" data-vdel="${v.id}" title="이 버전 삭제" aria-label="버전 ${i + 1} 삭제">×</button></span>`).join('');
   }
-  rail.addEventListener('click', e => { const b = e.target.closest('[data-id]'); if (b && !busy) location.hash = 'edit=' + b.dataset.id; });
+  rail.addEventListener('click', async e => {
+    const x = e.target.closest('[data-vdel]');
+    if (x) {
+      if (busy) return;
+      const id = x.dataset.vdel, idx = versions.findIndex(v => v.id === id);
+      try { await api.del(`/api/images/${id}`); } catch (err) { toast(err.message); return; }
+      versions = versions.filter(v => v.id !== id);
+      toast('삭제했어요');
+      if (!versions.length) { rec = null; location.hash = 'gallery'; return; }
+      if (rec && rec.id === id) { rec = null; location.hash = 'edit=' + versions[Math.max(0, idx - 1)].id; return; }
+      paintRail(); paintPane();
+      return;
+    }
+    const b = e.target.closest('[data-id]'); if (b && !busy) location.hash = 'edit=' + b.dataset.id;
+  });
 
   /* ------------ side pane */
   function paintPane() {
@@ -468,7 +491,7 @@ const Editor = (() => {
     return `<h2>세그먼트 <span style="display:flex;gap:6px"><button class="ghost" id="reSeg" title="다시 분석">↻</button>${list.length ? `<a class="ghost" href="/api/images/${rec.id}/segments.zip" download>${ICON_DL}모두 다운로드</a>` : ''}</span></h2>
       ${list.length ? `<ul class="segs">${list.map(r => row(r)).join('')}</ul>` : '<p class="note">찾은 부분이 없어요. 이미지를 직접 클릭하거나, 아래에 찾을 대상을 입력해 보세요.</p>'}
       <p class="note" style="margin-top:12px">목록에 없는 부분은 <b>이미지를 클릭</b>하면 잡아요. 여러 개는 Shift를 누른 채 고르세요.</p>
-      <div class="field"><div class="inline"><input id="segFind" placeholder="찾을 대상 (영어, 예: epaulets, necklace)"><button class="btn" id="findSeg">찾기</button></div></div>`;
+      <div class="field"><div class="inline"><input id="segFind" placeholder="찾을 대상 (예: 스타킹, 목걸이, epaulets)"><button class="btn" id="findSeg">찾기</button></div></div>`;
   }
   let segProgress = 0, segError = '';
   async function loadSegments(autoRun) {

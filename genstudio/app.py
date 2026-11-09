@@ -283,7 +283,9 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
             raise HTTPException(404, str(e).strip("'"))
 
     @app.delete("/api/images/{image_id}")
-    async def delete_image(image_id: str):
+    async def delete_image(image_id: str, all_versions: bool = False):
+        if all_versions:
+            return {"deleted": library.delete_versions(image_id)}
         return {"deleted": library.delete(image_id)}
 
     @app.post("/api/import")
