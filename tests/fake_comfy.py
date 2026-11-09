@@ -54,7 +54,9 @@ class FakeComfy:
         det = graph[graph[save_id]["inputs"]["images"][0]]["inputs"]["mask"][0]
         d = graph[det]["inputs"]
         boxes = []
-        if "positive_coords" in d:
+        if graph[det]["class_type"] == "RemoveBackground":
+            boxes = [(w * .25, h * .1, w * .75, h)]
+        elif "positive_coords" in d:
             pts = json.loads(graph[d["positive_coords"][0]]["inputs"]["value"])
             boxes = [(p["x"] - 20, p["y"] - 20, p["x"] + 20, p["y"] + 20) for p in pts]
         else:

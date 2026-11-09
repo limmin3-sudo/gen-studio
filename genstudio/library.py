@@ -103,7 +103,7 @@ class Library:
         })
 
     def _thumb(self, im: Image.Image, iid: str) -> None:
-        t = im.convert("RGB")
+        t = flat_rgb(im)
         t.thumbnail((320, 320))
         t.save(self.root / ".thumbs" / f"{iid}.jpg", "JPEG", quality=82)
 
@@ -135,7 +135,15 @@ class Library:
         if dest.exists() and not overwrite:
             raise ValueError(f"이미 파일이 있어요: {dest} (덮어쓰려면 overwrite)")
         with Image.open(src) as im:
-            im = im.convert("RGB")
+            alpha = im.mode in ("RGBA", "LA") or "transparency" in im.info
+            if alpha and fmt in ("png", "webp"):
+                im = im.convert("RGBA")                 # keep the cut-out transparent
+            elif alpha:
+                rgba = im.convert("RGBA")               # jpg has no transparency: put it on white
+                im = Image.new("RGB", rgba.size, (255, 255, 255))
+                im.paste(rgba, mask=rgba.split()[3])
+            else:
+                im = im.convert("RGB")
             if width and height:
                 im = im.resize((int(width), int(height)), Image.LANCZOS)
             elif width or height:
@@ -224,6 +232,16 @@ def _embedded_metadata(im: Image.Image) -> dict:
         out["tool"] = info.get("Software", "NovelAI")
         out["prompt_text"] = str(info.get("Description", ""))
     return out
+
+
+def flat_rgb(im: Image.Image, backdrop: tuple[int, int, int] = (238, 238, 238)) -> Image.Image:
+    """RGB copy for previews; transparent cut-outs sit on a light gray instead of showing the removed background."""
+    if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:
+        rgba = im.convert("RGBA")
+        out = Image.new("RGB", rgba.size, backdrop)
+        out.paste(rgba, mask=rgba.split()[3])
+        return out
+    return im.convert("RGB")
 
 
 def png_bytes(im: Image.Image) -> bytes:

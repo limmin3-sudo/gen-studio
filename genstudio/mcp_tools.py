@@ -14,7 +14,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image as MCPImage
 from PIL import Image
 
-from .jobs import EditRequest, GenerateRequest, SegmentRequest
+from .jobs import CutoutRequest, EditRequest, GenerateRequest, SegmentRequest
+from .library import flat_rgb
 
 if TYPE_CHECKING:
     from .app import State
@@ -37,6 +38,8 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   trigger words are added automatically.
 - Characters: create_character(name, image ids or paths) once, then generate_image(character=name, ...) keeps
   the same face and outfit across scenes (tutorials, series).
+- remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
+  export it as png/webp to keep the transparency.
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
 
 Working style: users speak casually ("디렉터 튜토리얼 장면 하나", "브로커 허벅지까지 늘려줘"). Work out the details
@@ -124,7 +127,7 @@ def build_mcp(state: "State") -> MCPServer:
         if not path:
             raise ValueError(f"이미지를 찾을 수 없어요: {image_id}")
         with Image.open(path) as im:
-            im = im.convert("RGB")
+            im = flat_rgb(im)
             if max(im.size) > max_side:
                 im.thumbnail((max_side, max_side))
             buf = io.BytesIO()
@@ -292,6 +295,16 @@ def build_mcp(state: "State") -> MCPServer:
                     "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
         return [{"image_id": image_id, "segments": _seg_list(image_id)},
                 MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+
+    @mcp.tool(description=(
+        "Remove the background: keeps the main people/objects and makes everything else transparent. "
+        "background: 'transparent' (default), 'white', 'black', 'gray' or '#rrggbb'. Saved as a new version."))
+    async def remove_background(image_id: str | None = None, image_path: str | None = None,
+                                background: str = "transparent", wait_seconds: int = 45, include_image: bool = True):
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        job = state.engine.submit_cutout(CutoutRequest(image_id=image_id, background=background))
+        return await _finish(job, wait_seconds, include_image)
 
     @mcp.tool(description="Save a character (name + 1-6 reference images) so later generations keep the same person.")
     async def create_character(name: str, image_ids: list[str] | None = None, image_paths: list[str] | None = None,

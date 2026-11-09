@@ -409,6 +409,9 @@ const Editor = (() => {
     h += `<label class="switch" style="margin:4px 0 16px"><input type="checkbox" id="autoFillToggle" ${autoFill ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>`;
     if (rec) {
       const model = MODELS.find(m => m.id === rec.model_id);
+      h += `<h2>배경 제거</h2>
+        <p class="note">사람이나 물건만 남기고 배경을 지웁니다. 새 버전으로 저장되고, PNG로 받으면 투명하게 남아요.</p>
+        <div class="field"><div class="seg2"><button data-bg="transparent">투명</button><button data-bg="white">흰색</button><button data-bg="gray">회색</button><button data-bg="black">검정</button></div></div>`;
       h += `<h2>정보</h2><dl class="kv">
         ${rec.prompt ? `<dt>프롬프트</dt><dd>${esc(rec.prompt)}</dd>` : ''}
         ${rec.prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.prompt_en)}</dd>` : ''}
@@ -442,6 +445,12 @@ const Editor = (() => {
     const asp = e.target.closest('[data-asp]'); if (asp) { expandAspect = asp.dataset.asp; paintPane(); }
     const anc = e.target.closest('[data-anc]'); if (anc) { expandAnchor = anc.dataset.anc; paintPane(); }
     if (e.target.closest('#doExpand')) submitEdit({mode: 'outpaint', aspect: expandAspect, anchor: expandAnchor, prompt: promptEl.value.trim()});
+    const bgb = e.target.closest('[data-bg]');
+    if (bgb && rec && !busy) {
+      api.post(`/api/images/${rec.id}/remove-background`, {background: bgb.dataset.bg})
+        .then(j => runJob(j, '배경 제거 · BiRefNet')).catch(err => toast(err.message, 6000));
+      return;
+    }
     if (e.target.closest('#useAsRef') && rec) { Gen.addRef(rec.id); toast('생성 화면의 참고 이미지에 넣었어요'); }
     if (e.target.closest('#saveChar') && rec) {
       const name = $('#charName').value.trim();

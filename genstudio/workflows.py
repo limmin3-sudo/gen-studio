@@ -294,6 +294,16 @@ def rewrite_text(vlm_file: str, instruction: str, max_length: int = 400) -> dict
     return g.nodes
 
 
+def remove_background(image_name: str, model_file: str, prefix: str = "gen-studio/cutout") -> dict:
+    """BiRefNet foreground mask (white = keep). The cut-out itself is composed in Python to keep full quality."""
+    g = Graph()
+    img = out(g.add("LoadImage", image=image_name))
+    bg = out(g.add("LoadBackgroundRemovalModel", bg_removal_name=model_file))
+    mask = out(g.add("RemoveBackground", bg_removal_model=bg, image=img))
+    g.add("SaveImage", filename_prefix=prefix, images=out(g.add("MaskToImage", mask=mask)))
+    return g.nodes
+
+
 def segment_labels(image_name: str, sam_file: str, labels: list[str], threshold: float = 0.4,
                    prefix: str = "gen-studio/seg") -> tuple[dict, dict[str, int]]:
     """One SAM 3 text query per label. Returns the graph and {SaveImage node id: label index}."""

@@ -14,7 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import __version__, router
 from .comfy import ComfyClient
 from .config import ROOT, Settings, access_token, load_settings
-from .jobs import EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CutoutRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -193,6 +193,17 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
                                   bool(body.get("overwrite", False)))
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
+
+    @app.post("/api/images/{image_id}/remove-background")
+    async def remove_background(image_id: str, body: dict | None = None):
+        body = body or {}
+        try:
+            return engine.submit_cutout(CutoutRequest(image_id=image_id,
+                                                      background=body.get("background") or "transparent")).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     # -------------------------------------------------------------- segments
     @app.post("/api/images/{image_id}/segment")

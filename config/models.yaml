@@ -190,3 +190,10 @@ tools:
       url: https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors
       size: 1745546848
       sha256: 9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03
+  # 배경 제거: 사람·물건만 남기고 투명하게 (ComfyUI 기본 노드 RemoveBackground)
+  bg_removal:
+    - name: birefnet.safetensors
+      dir: background_removal
+      url: https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors
+      size: 444473596
+      sha256: 9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154

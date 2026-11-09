@@ -215,3 +215,24 @@ def test_one_reference_restyled_with_style_model(client, fake):
     # a plain reference request still goes to Qwen
     d2 = client.post("/api/route", json={"prompt": "image 1 여자가 해변에 서 있는 사진", "references": [ref]}).json()
     assert d2["model_id"] == "qwen-image-21-turbo" and "restyle" not in d2
+
+
+def test_remove_background(client, fake, tmp_path):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman", "aspect": "portrait"}).json()["id"])
+    img = j["result_ids"][0]
+    c = wait_job(client, client.post(f"/api/images/{img}/remove-background", json={}).json()["id"])
+    assert c["status"] == "done", c["error"]
+    rec = client.get(f"/api/images/{c['result_ids'][0]}").json()
+    assert rec["parent_id"] == img and rec["label"] == "배경 제거 (투명)" and rec["root_id"] == img
+    data = client.get(f"/api/images/{rec['id']}/file").content
+    with Image.open(io.BytesIO(data)) as im:
+        assert im.mode == "RGBA" and im.getpixel((5, 5))[3] == 0 and im.getpixel((416, 600))[3] == 255
+    graph = list(fake.prompts.values())[-1]
+    assert any(n["class_type"] == "RemoveBackground" for n in graph.values())
+    # white background, and regenerate repeats it
+    w = wait_job(client, client.post(f"/api/images/{img}/remove-background", json={"background": "white"}).json()["id"])
+    with Image.open(io.BytesIO(client.get(f"/api/images/{w['result_ids'][0]}/file").content)) as im:
+        assert im.mode == "RGB" and im.getpixel((5, 5)) == (255, 255, 255)
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert client.get(f"/api/images/{r['result_ids'][0]}").json()["label"] == "배경 제거 (투명)"
+    assert client.post(f"/api/images/{img}/remove-background", json={"background": "plaid"}).status_code == 400

@@ -74,6 +74,40 @@ class EditRequest(BaseModel):
     translate: bool | None = None
 
 
+class CutoutRequest(BaseModel):
+    image_id: str
+    background: str = Field("transparent", description="transparent | white | black | gray | #rrggbb")
+    label: str | None = None
+
+
+BG_COLORS = {"transparent": None, "white": (255, 255, 255), "black": (0, 0, 0), "gray": (128, 128, 128),
+             "흰색": (255, 255, 255), "검정": (0, 0, 0), "회색": (128, 128, 128), "투명": None}
+
+
+def parse_bg(value: str) -> tuple[int, int, int] | None:
+    v = (value or "transparent").strip().lower()
+    if v in BG_COLORS:
+        return BG_COLORS[v]
+    m = re.fullmatch(r"#?([0-9a-f]{6})", v)
+    if not m:
+        raise ValueError("배경은 transparent, white, black, gray 또는 #rrggbb 형식이에요")
+    h = m.group(1)
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def compose_cutout(image: bytes, mask: bytes, background: tuple[int, int, int] | None) -> bytes:
+    with Image.open(io.BytesIO(image)) as im, Image.open(io.BytesIO(mask)) as m:
+        rgba = im.convert("RGBA")
+        alpha = m.convert("L").resize(rgba.size, Image.LANCZOS)
+    rgba.putalpha(alpha)
+    if background is not None:
+        bg = Image.new("RGBA", rgba.size, background + (255,))
+        rgba = Image.alpha_composite(bg, rgba).convert("RGB")
+    buf = io.BytesIO()
+    rgba.save(buf, "PNG")
+    return buf.getvalue()
+
+
 class SegmentRequest(BaseModel):
     image_id: str
     labels: list[str] | None = Field(None, description="찾을 대상 (영어 명사). 비우면 자동으로 찾음")
@@ -482,6 +516,49 @@ class Engine:
                   decision={"action": action, "labeler": how, "model_name": "SAM 3.1"})
         return self._enqueue(job)
 
+    def submit_cutout(self, req: CutoutRequest) -> Job:
+        if not self.library.get(req.image_id):
+            raise KeyError("이미지를 찾을 수 없어요")
+        parse_bg(req.background)
+        if not self.registry.tool_ready("bg_removal", self.settings.models_dir):
+            raise ValueError("배경 제거 모델(BiRefNet)이 없어요. update.bat을 실행해 받아 주세요.")
+        job = Job(id=uuid.uuid4().hex[:12], kind="cutout", request=req.model_dump(),
+                  decision={"action": "배경 제거", "model_name": "BiRefNet"})
+        return self._enqueue(job)
+
+    async def _run_cutout(self, job: Job) -> None:
+        req = CutoutRequest(**job.request)
+        src = self.library.get(req.image_id)
+        path = self.library.path(req.image_id)
+        if not src or not path:
+            raise ComfyError("이미지가 사라졌어요")
+        data = path.read_bytes()
+        name = await self.comfy.upload_image(data, f"{src['id']}.png")
+        job.message = "배경을 나누는 중"
+        try:
+            outputs = await self.comfy.run_outputs(
+                workflows.remove_background(name, self.registry.tool_file("bg_removal")), self._progress(job, 0, 1))
+        except ComfyError as e:
+            if "RemoveBackground" in str(e) or "LoadBackgroundRemovalModel" in str(e):
+                raise ComfyError("ComfyUI가 오래돼서 배경 제거 노드가 없어요. "
+                                 "ComfyUI_windows_portable\\update\\update_comfyui.bat 을 실행한 뒤 다시 켜 주세요.") from e
+            raise
+        imgs = list(iter_images(outputs))
+        if not imgs:
+            raise ComfyError("배경 제거 결과가 없어요")
+        _n, d = imgs[0]
+        mask = await self.comfy.view(d["filename"], d.get("subfolder", ""))
+        color = parse_bg(req.background)
+        png = compose_cutout(data, mask, color)
+        bg_label = {None: "투명"}.get(color, req.background)
+        rec = self.library.add(png, {
+            "kind": "edit", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
+            "model_id": src.get("model_id"), "family": src.get("family"), "style": src.get("style"),
+            "label": req.label or f"배경 제거 ({bg_label})",
+            "edit": {"mode": "cutout", "background": req.background},
+        })
+        job.result_ids.append(rec["id"])
+
     def _enqueue(self, job: Job) -> Job:
         self.jobs[job.id] = job
         self._done_events[job.id] = asyncio.Event()
@@ -536,6 +613,8 @@ class Engine:
                     await self._run_generate(job)
                 elif job.kind == "segment":
                     await self._run_segment(job)
+                elif job.kind == "cutout":
+                    await self._run_cutout(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -829,6 +908,9 @@ class Engine:
                 character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise")))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
+            if edit.get("mode") == "cutout":
+                return self.submit_cutout(CutoutRequest(image_id=rec["parent_id"],
+                                                        background=edit.get("background") or "transparent"))
             mask_b64 = None
             if rec.get("mask_file"):
                 mask_b64 = base64.b64encode((self.library.root / rec["mask_file"]).read_bytes()).decode()
