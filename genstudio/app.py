@@ -96,6 +96,11 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         return report
 
     # ------------------------------------------------------------ generation
+    @app.post("/api/recommend")
+    async def recommend(body: dict):
+        return engine.recommend(body.get("task", "generate"), body.get("prompt", ""), body.get("image_id"),
+                                body.get("style", "auto"), body.get("aspect", "auto"))
+
     @app.post("/api/route")
     async def route_preview(req: GenerateRequest):
         return engine.route(req).as_dict()

@@ -135,3 +135,14 @@ def test_character_loose_names_and_aliases(tmp_path):
     assert cs.get("브로커")["name"] == "밀수 브로커"
     assert cs.get("항해사") is None
     assert Characters(tmp_path / "c.json").get("director")["aliases"] == ["director"]   # persisted
+
+
+def test_recommendations_per_task(client):
+    r = client.post("/api/recommend", json={"task": "generate", "prompt": '네온 간판 "OPEN"'}).json()
+    assert r["recommended"] == "qwen-image-21-turbo" and r["models"][0]["recommended"]
+    assert all(m["best_for"] for m in r["models"])
+    r = client.post("/api/recommend", json={"task": "instruction"}).json()
+    assert [m["id"] for m in r["models"] if m["compatible"]] == ["qwen-image-21-turbo"]
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "반실사 여자"}).json()["id"])
+    r = client.post("/api/recommend", json={"task": "inpaint", "image_id": j["result_ids"][0]}).json()
+    assert r["recommended"] == "realism-illustrious" and "그림체" in r["reason"]

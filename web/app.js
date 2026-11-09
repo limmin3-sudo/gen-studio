@@ -70,7 +70,15 @@ function renderBanner() {
 }
 function fillModelSelect() {
   const sel = $('#genModel'); if (sel.options.length > 1) return;
-  for (const m of MODELS) sel.add(new Option(`${m.name}${m.installed === false ? ' (미설치)' : ''}`, m.id));
+  for (const m of MODELS) sel.add(new Option(`${m.name} — ${m.best_for || ''}${m.installed === false ? ' (미설치)' : ''}`, m.id));
+}
+function markRecommended(sel, recId, autoLabel = '자동') {
+  // "★ 추천" on the recommended model; the auto entry says which one it will use
+  for (const o of sel.options) {
+    const base = o.dataset.base || (o.dataset.base = o.textContent);
+    if (o.value === 'auto') o.textContent = recId ? `${autoLabel} (추천: ${(MODELS.find(m => m.id === recId) || {}).name || recId})` : base;
+    else o.textContent = (o.value === recId ? '★ 추천 · ' : '') + base;
+  }
 }
 
 /* --------------------------------------------------------------- router */
@@ -128,7 +136,13 @@ const Gen = (() => {
     s.value = store.get('gen.' + k, s.value) ?? s.value;
     s.addEventListener('change', () => { store.set('gen.' + k, s.value); syncLabels(); preview(); });
   }
-  function syncLabels() { for (const k in sels) lbl[k].textContent = sels[k].selectedOptions[0]?.textContent.replace(/\s*\(미설치\)/, '').split(' ')[0] || sels[k].value; }
+  function syncLabels() {
+    for (const k in sels) {
+      const o = sels[k].selectedOptions[0];
+      if (k === 'model') { const m = MODELS.find(x => x.id === sels.model.value); lbl.model.textContent = m ? m.name : '자동'; continue; }
+      lbl[k].textContent = o?.textContent.replace(/\s*\(미설치\)/, '').split(' ')[0] || sels[k].value;
+    }
+  }
   bindEnter(prompt, form);
   prompt.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(preview, 250); store.set('lastPrompt', prompt.value); });
 
@@ -145,8 +159,14 @@ const Gen = (() => {
     }
     if (!b.prompt) { routeEl.innerHTML = `<span class="hint">한국어로 써도 됩니다. "실사", "반실사", "포스터", "세로" 같은 말을 넣으면 그에 맞춰 고릅니다. 이미지에 넣을 글자는 "따옴표"로 감싸세요.</span>`; return; }
     try {
-      const d = await api.post('/api/route', b);
-      routeEl.innerHTML = `<span class="pill auto">자동 선택 → <b>${esc(d.model_name)}</b> · ${({semi: '반실사', text: '글자·디자인'})[d.style] || '실사'} · ${d.width}×${d.height}${d.reasons.length ? ` <span class="hint">(${esc(d.reasons.join(', '))})</span>` : ''}</span>`;
+      const d = await api.post('/api/route', {...b, model: 'auto'});
+      markRecommended(sels.model, d.model_id);
+      if (b.model !== 'auto' && b.model !== d.model_id) {
+        const chosen = MODELS.find(m => m.id === b.model);
+        routeEl.innerHTML = `<span class="pill auto">직접 선택 → <b>${esc(chosen ? chosen.name : b.model)}</b></span><span class="hint">이 요청의 추천은 ${esc(d.model_name)} (${esc(d.reasons.join(', '))})</span>`;
+        return;
+      }
+      routeEl.innerHTML = `<span class="pill auto">${b.model === 'auto' ? '자동 선택' : '직접 선택 · 추천과 같음'} → <b>${esc(d.model_name)}</b> · ${({semi: '반실사', text: '글자·디자인'})[d.style] || '실사'} · ${d.width}×${d.height}${d.reasons.length ? ` <span class="hint">(${esc(d.reasons.join(', '))})</span>` : ''}</span>`;
     } catch (e) { routeEl.innerHTML = `<span class="hint">${esc(e.message)}</span>`; }
   }
   form.addEventListener('submit', async e => {
@@ -457,6 +477,26 @@ const Editor = (() => {
     return names.join(', ');
   };
 
+  /* ------------ model picker (per task) */
+  const recCache = {}; let edModel = {};          // edModel[task] = chosen model id ('auto' default)
+  function currentTask() {
+    if (tool === 'crop') return 'expand';
+    if (pending || hasSel()) return 'inpaint';
+    if (!promptEl.value.trim()) return null;
+    return qwenReady() && editMode === 'instruction' ? 'instruction' : 'redraw';
+  }
+  function modelPill(task) {
+    if (!task || !rec) return '';
+    const key = `${rec.id}:${task}`, r = recCache[key];
+    if (!r) { api.post('/api/recommend', {task, image_id: rec.id}).then(x => { recCache[key] = x; paintRoute(); }).catch(() => {}); return ''; }
+    const cur = edModel[task] || 'auto';
+    const recName = (r.models.find(m => m.recommended) || {}).name || '';
+    const label = cur === 'auto' ? `자동 · 추천 ${recName}` : (r.models.find(m => m.id === cur) || {}).name;
+    const opts = [`<option value="auto" ${cur === 'auto' ? 'selected' : ''}>자동 (추천: ${esc(recName)})</option>`]
+      .concat(r.models.map(m => `<option value="${m.id}" ${m.id === cur ? 'selected' : ''} ${m.compatible && m.installed !== false ? '' : 'disabled'}>${m.recommended ? '★ 추천 · ' : ''}${esc(m.name)} — ${esc(m.compatible ? m.best_for : m.note)}${m.installed === false ? ' (미설치)' : ''}</option>`));
+    return `<label class="sel-pill" title="${esc(r.reason)}">모델 <b>${esc(label)}</b><select data-edmodel="${task}" aria-label="모델">${opts.join('')}</select></label>`;
+  }
+
   /* ------------ prompt / routing */
   const SUG_MASK = ['지워줘', '빨간색으로', '검은 가죽 재킷'];
   function paintRoute() {
@@ -484,7 +524,10 @@ const Editor = (() => {
     } else {
       h = `<span class="hint">바꿀 부분을 브러시로 칠하세요. 칠하지 않고 "배경을 우주선 함교로"처럼 입력하면 문장대로 편집합니다.</span>`;
     }
+    const task = currentTask();
+    if (task && !pending) h += modelPill(task);
     routeEl.innerHTML = h;
+    if (pending && task) { const ask = routeEl.querySelector('.ask .opts'); if (ask) ask.insertAdjacentHTML('beforeend', modelPill(task)); }
     promptEl.placeholder = pending ? '삭제한 자리에 무엇을 그릴지 입력하세요' : (hasSel() ? `${selName()}을(를) 무엇으로 바꿀까요?` : '바꿀 부분을 고르거나 칠하고, 무엇으로 바꿀지 입력하세요');
   }
   routeEl.addEventListener('click', e => {
@@ -495,7 +538,10 @@ const Editor = (() => {
     const st = e.target.closest('[data-strength]'); if (st) { strength = st.dataset.strength; store.set('strength', strength); paintRoute(); }
     const em = e.target.closest('[data-emode]'); if (em) { editMode = em.dataset.emode; store.set('editMode', editMode); paintRoute(); }
   });
-  routeEl.addEventListener('change', e => { if (e.target.id === 'askDefault') setAutoFill(e.target.checked); });
+  routeEl.addEventListener('change', e => {
+    if (e.target.id === 'askDefault') setAutoFill(e.target.checked);
+    if (e.target.dataset.edmodel) { edModel[e.target.dataset.edmodel] = e.target.value; paintRoute(); }
+  });
 
   function startDelete() {
     if (!hasSel()) { toast('삭제할 부분을 먼저 고르거나 브러시로 칠하세요'); return; }
@@ -516,7 +562,9 @@ const Editor = (() => {
 
   async function submitEdit(opts) {
     if (busy || !rec) return;
+    const task = {inpaint: 'inpaint', variation: 'redraw', reference: 'instruction', outpaint: 'expand'}[opts.mode];
     const body = {image_id: rec.id, prompt: opts.prompt || '', mode: opts.mode, fill: opts.fill || 'prompt', denoise: opts.denoise ?? null,
+                  model: edModel[task] || 'auto',
                   aspect: opts.aspect || null, anchor: opts.anchor || 'center'};
     if (opts.mode === 'inpaint') {
       if (painted) body.mask_png = cv.toDataURL('image/png');

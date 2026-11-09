@@ -246,6 +246,33 @@ class Engine:
         job = Job(id=uuid.uuid4().hex[:12], kind="edit", request=req.model_dump(), decision=decision)
         return self._enqueue(job)
 
+    def recommend(self, task: str, prompt: str = "", image_id: str | None = None, style: str = "auto",
+                  aspect: str = "auto") -> dict:
+        """Models for a task with the recommended one marked, for manual pickers.
+
+        task: generate | inpaint (mask/segments) | redraw | instruction | expand
+        """
+        md = self.settings.models_dir
+        src = self.library.get(image_id) if image_id else None
+        if task == "generate":
+            d = self.route(GenerateRequest(prompt=prompt or " ", style=style, aspect=aspect))
+            rec_id, why = d.model.id, ", ".join(d.reasons)
+        elif task == "instruction":
+            m = next((x for x in self.registry.models if x.family.encoder == "qwen21"), None)
+            rec_id, why = (m.id if m else None), "문장 편집과 참고 이미지는 Qwen-Image 2.1만 지원"
+        else:
+            m, why = router.model_for_edit(self.registry, (src or {}).get("model_id"), md, self.settings.default_style)
+            rec_id = m.id
+            why = f"{why}라서 그림체가 이어짐" if src and src.get("model_id") else why
+        items = []
+        for m in self.registry.models:
+            ok = task != "instruction" or m.family.encoder == "qwen21"
+            items.append({"id": m.id, "name": m.name, "best_for": m.best_for, "style": m.style,
+                          "installed": m.installed(md), "compatible": ok, "recommended": m.id == rec_id,
+                          "note": "" if ok else "이 작업에는 쓸 수 없음"})
+        items.sort(key=lambda x: (not x["recommended"], not x["compatible"], x["installed"] is False))
+        return {"task": task, "recommended": rec_id, "reason": why, "models": items}
+
     def vlm_file(self) -> str | None:
         """Qwen3-VL text encoder that ships with Qwen-Image 2.1 doubles as the image describer."""
         for fam in self.registry.families.values():

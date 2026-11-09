@@ -74,6 +74,7 @@ class ModelSpec:
     prompt_prefix: str | None = None
     keywords: list[str] = field(default_factory=list)   # words that pick this model directly
     optional: bool = False                               # not downloaded unless asked for
+    best_for: str = ""                                   # one line shown next to the model in pickers
 
     @property
     def prefix(self) -> str:
@@ -159,6 +160,8 @@ class Registry:
                 "style": m.style,
                 "role": m.role,
                 "optional": m.optional,
+                "best_for": m.best_for,
+                "references": m.family.encoder == "qwen21",
                 "installed": m.installed(models_dir),
                 "missing": [f.name for f in m.all_files() if f.installed(models_dir) is False],
             }

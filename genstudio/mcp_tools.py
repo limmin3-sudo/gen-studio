@@ -244,7 +244,13 @@ def build_mcp(state: "State") -> MCPServer:
                            overwrite: bool = False):
         return state.library.export(image_id, Path(path), format, max_side, width, height, quality, overwrite)
 
-    @mcp.tool(description="List the image models, their style (realistic/semi) and whether they are installed.")
+    @mcp.tool(description=(
+        "Which model to use for a task, with the recommended one marked and why. task: generate | inpaint | redraw | "
+        "instruction | expand. Pass the chosen id as `model` to generate_image / edit_image, or leave model='auto'."))
+    async def recommend_model(task: str = "generate", prompt: str = "", image_id: str | None = None):
+        return state.engine.recommend(task, prompt, image_id)
+
+    @mcp.tool(description="List the image models, what each is best for, and whether they are installed.")
     async def list_models():
         return state.registry.status(state.settings.models_dir)
 

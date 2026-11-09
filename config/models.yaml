@@ -124,6 +124,7 @@ families:
 
 models:
   - id: cyberrealistic-zit
+    best_for: "실사 인물, 피부와 조명. NSFW 가능, 빠름"
     name: "CyberRealistic Z-Image Turbo v10"
     family: zimage
     style: realistic
@@ -137,6 +138,7 @@ models:
 
 
   - id: realism-illustrious
+    best_for: "실사에 가까운 반실사, 다양한 포즈. NSFW 가능. 영어 태그 프롬프트가 잘 먹힘"
     name: "Realism Illustrious v5.5 (Stable Yogi)"
     family: illustrious
     style: semi
@@ -152,6 +154,7 @@ models:
 
   # 글자, 포스터, 간판, 복잡한 구도처럼 문장을 정확히 따라야 할 때
   - id: qwen-image-21-turbo
+    best_for: "글자·포스터, 긴 문장, 참고 이미지로 같은 인물 유지, 문장 편집. NSFW는 약함"
     name: "Qwen-Image 2.1 Turbo"
     family: qwen21
     style: text
@@ -165,6 +168,7 @@ models:
 
   # 극실사 사진. 4단계 영상 기능에서도 같은 파일을 씁니다.
   - id: wan22-14b
+    best_for: "극실사 사진 질감. NSFW 가능, 가장 느림"
     name: "Wan 2.2 14B"
     family: wan22
     style: realistic
