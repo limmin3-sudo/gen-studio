@@ -89,6 +89,10 @@ class FakeComfy:
                 if data:
                     with Image.open(io.BytesIO(data)) as im:
                         w, h = im.size
+        ups = sum(1 for n in graph.values() if n["class_type"] == "ImageUpscaleWithModel")
+        if ups:                                   # 1MP, then x2 per Real-ESRGAN step
+            k = (1_000_000 / (w * h)) ** 0.5 * 2 ** ups
+            w, h = round(w * k), round(h * k)
         buf = io.BytesIO()
         Image.new("RGB", (w, h), (120, 90, 200)).save(buf, "PNG")
         return buf.getvalue()

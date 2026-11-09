@@ -39,6 +39,7 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - Characters: build_character(name, image_id) turns ONE photo into a full character (face, full body, side
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
+- upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
   export it as png/webp to keep the transparency.
@@ -301,6 +302,17 @@ def build_mcp(state: "State") -> MCPServer:
                     "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
         return [{"image_id": image_id, "segments": _seg_list(image_id)},
                 MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+
+    @mcp.tool(description=(
+        "Upscale an image 2x (about 2K) or 4x (about 4K). refine (default on) lightly redraws at the new size so "
+        "skin, hair and fabric get real detail. Saved as a new version."))
+    async def upscale_image(image_id: str | None = None, image_path: str | None = None, scale: int = 2,
+                            refine: bool | None = None, wait_seconds: int = 120, include_image: bool = True):
+        from .jobs import UpscaleRequest
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        job = state.engine.submit_upscale(UpscaleRequest(image_id=image_id, scale=4 if scale >= 4 else 2, refine=refine))
+        return await _finish(job, wait_seconds, include_image)
 
     @mcp.tool(description=(
         "Fix small or blurry faces, eyes or hands: finds each one, redraws it enlarged and blends it back. "

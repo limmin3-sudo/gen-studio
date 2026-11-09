@@ -294,3 +294,29 @@ def test_detail_pass_redraws_faces_and_hands_enlarged(client, fake):
     imp = client.post("/api/import", files={"file": ("a.png", io.BytesIO(base64.b64decode(mask_png(256, 256, (0, 0, 8, 8)))), "image/png")}).json()
     e = wait_job(client, client.post(f"/api/images/{imp['id']}/detail", json={"targets": ["eyes"]}).json()["id"])
     assert e["status"] == "error" and "눈" in e["error"]
+
+
+def test_upscale_2x_and_4x(client, fake):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman", "aspect": "portrait"}).json()["id"])
+    img = j["result_ids"][0]                                    # 832x1216
+    u = client.post(f"/api/images/{img}/upscale", json={"scale": 2}).json()
+    assert u["decision"]["model_id"] == "cyberrealistic-zit" and u["decision"]["denoise"] == 0.33
+    u = wait_job(client, u["id"])
+    assert u["status"] == "done", u["error"]
+    rec = client.get(f"/api/images/{u['result_ids'][0]}").json()
+    assert rec["label"] == "업스케일 2배" and 1600 <= rec["width"] <= 1700 and rec["height"] > 2300
+    g = list(fake.prompts.values())[-1]
+    ks = next(n for n in g.values() if n["class_type"] == "KSampler")["inputs"]
+    assert (ks["steps"], ks["sampler_name"], ks["scheduler"], ks["denoise"]) == (5, "dpmpp_2m_sde", "beta", 0.33)
+    assert next(n for n in g.values() if n["class_type"] == "UpscaleModelLoader")["inputs"]["model_name"] == "RealESRGAN_x4plus.safetensors"
+    # 4x without the redraw: two Real-ESRGAN steps and no sampler
+    u4 = wait_job(client, client.post(f"/api/images/{img}/upscale", json={"scale": 4, "refine": False}).json()["id"])
+    g = list(fake.prompts.values())[-1]
+    assert sum(n["class_type"] == "ImageUpscaleWithModel" for n in g.values()) == 2
+    assert not any(n["class_type"] == "KSampler" for n in g.values())
+    assert client.get(f"/api/images/{u4['result_ids'][0]}").json()["width"] > 3300
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert r["status"] == "done"
+    # 2x of the 2K result: keeps its size first and skips the redraw
+    again = client.post(f"/api/images/{rec['id']}/upscale", json={"scale": 2}).json()["decision"]
+    assert again["model_id"] is None and again["width"] == rec["width"] * 2

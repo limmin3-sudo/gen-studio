@@ -294,6 +294,39 @@ def rewrite_text(vlm_file: str, instruction: str, max_length: int = 400) -> dict
     return g.nodes
 
 
+def upscale(image_name: str, upscaler: str, scale: int = 2, refine_model: ModelSpec | None = None,
+            prompt: str = "", denoise: float = 0.33, seed: int = 0, models_dir: Path | None = None,
+            megapixels: float = 1.0, prefix: str = "gen-studio/upscale") -> tuple[dict, dict]:
+    """2x / 4x upscale. Same recipe as ComfyUI's "Image Upscale (Z-Image-Turbo)" template: normalise to 1MP,
+    Real-ESRGAN x4 then halve (= 2x), and lightly redraw at the new size so skin, hair and fabric get real detail
+    instead of smoothing. 4x adds a second Real-ESRGAN step on top (a full redraw at 16MP would not fit in 16GB)."""
+    g = Graph()
+    img = out(g.add("LoadImage", image=image_name))
+    img = out(g.add("ImageScaleToTotalPixels", image=img, upscale_method="lanczos", megapixels=float(megapixels), resolution_steps=1))
+    um = out(g.add("UpscaleModelLoader", model_name=upscaler))
+
+    def esrgan_2x(x):
+        x = out(g.add("ImageUpscaleWithModel", upscale_model=um, image=x))
+        return out(g.add("ImageScaleBy", image=x, upscale_method="lanczos", scale_by=0.5))
+
+    img = esrgan_2x(img)
+    text = ""
+    if refine_model is not None:
+        ms, c, v = _loaders(g, refine_model, models_dir)
+        pos, neg, text = _conditioning(g, refine_model, c, v, prompt or "high quality photo, sharp details", "")
+        lat = out(g.add("VAEEncode", pixels=img, vae=v))
+        fam = refine_model.family
+        s = g.add("KSampler", model=ms["main"], seed=int(seed), steps=5 if fam.id == "zimage" else 12,
+                  cfg=1.0 if fam.id == "zimage" else max(1.0, fam.cfg - 1), positive=pos, negative=neg, latent_image=lat,
+                  sampler_name="dpmpp_2m_sde" if fam.id == "zimage" else fam.sampler,
+                  scheduler="beta" if fam.id == "zimage" else fam.scheduler, denoise=float(denoise))
+        img = out(g.add("VAEDecode", samples=out(s), vae=v))
+    if scale >= 4:
+        img = esrgan_2x(img)
+    g.add("SaveImage", filename_prefix=prefix, images=img)
+    return g.nodes, {"final_prompt": text}
+
+
 def remove_background(image_name: str, model_file: str, prefix: str = "gen-studio/cutout") -> dict:
     """BiRefNet foreground mask (white = keep). The cut-out itself is composed in Python to keep full quality."""
     g = Graph()
@@ -350,6 +383,8 @@ REQUIRED_NODES = sorted({
     "ModelSamplingSD3", "LoraLoaderModelOnly", "KSamplerAdvanced", "EmptyHunyuanLatentVideo",
     # canvas extension
     "ImagePadForOutpaint", "LoraLoader",
+    # upscale
+    "UpscaleModelLoader", "ImageUpscaleWithModel", "ImageScaleBy", "ImageScaleToTotalPixels",
     # segmentation
     "SAM3_Detect", "MaskToImage", "PrimitiveString", "TextGenerateV2", "PreviewAny",
 })

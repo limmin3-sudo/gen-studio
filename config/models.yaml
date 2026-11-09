@@ -197,3 +197,10 @@ tools:
       url: https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors
       size: 444473596
       sha256: 9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154
+  # 업스케일: 4배로 키우는 Real-ESRGAN (+ Z-Image로 디테일 다시 그리기, ComfyUI 공식 예제 방식)
+  upscale:
+    - name: RealESRGAN_x4plus.safetensors
+      dir: upscale_models
+      url: https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged/resolve/main/RealESRGAN_x4plus.safetensors
+      size: 66857836
+      sha256: 37f9a931c215f040aa6d50f711f2cb115f713c46df1d0d6469a8bd7bfe9a60bb

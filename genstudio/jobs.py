@@ -74,6 +74,14 @@ class EditRequest(BaseModel):
     translate: bool | None = None
 
 
+class UpscaleRequest(BaseModel):
+    image_id: str
+    scale: Literal[2, 4] = 2
+    refine: bool | None = Field(None, description="키운 뒤 디테일을 살짝 다시 그리기 (비우면 자동: 켬)")
+    denoise: float | None = Field(None, ge=0.1, le=0.6)
+    prompt: str = ""
+
+
 class CutoutRequest(BaseModel):
     image_id: str
     background: str = Field("transparent", description="transparent | white | black | gray | #rrggbb")
@@ -593,6 +601,58 @@ class Engine:
         char = self.characters.save(req.name, [src["id"], *job.result_ids], description, aliases=req.aliases)
         job.result = {"character": char}
 
+    # ------------------------------------------------------------ upscale
+    def submit_upscale(self, req: UpscaleRequest) -> Job:
+        src = self.library.get(req.image_id)
+        if not src:
+            raise KeyError("이미지를 찾을 수 없어요")
+        if not self.registry.tool_ready("upscale", self.settings.models_dir):
+            raise ValueError("업스케일 모델(Real-ESRGAN)이 없어요. update.bat을 실행해 받아 주세요.")
+        m = None
+        mp = src["width"] * src["height"] / 1_000_000
+        big = mp > 1.5                          # already upscaled: keep its size, just Real-ESRGAN on top
+        if req.refine is not False and not big:
+            style = "semi" if src.get("style") == "semi" or src.get("family") == "illustrious" else "realistic"
+            cand = router.pick_model(self.registry, style, self.settings.models_dir, [])
+            if cand.installed(self.settings.models_dir) is not False and not cand.family.high_noise \
+                    and cand.family.encoder != "qwen21":
+                m = cand
+        w, h = src["width"], src["height"]
+        k = (1.0 if big else (1_000_000 / (w * h)) ** 0.5) * req.scale
+        decision = {"action": f"업스케일 {req.scale}배", "model_name": f"Real-ESRGAN{' + ' + m.name if m else ''}",
+                    "model_id": m.id if m else None, "family": m.family.id if m else None,
+                    "width": round(w * k), "height": round(h * k), "megapixels": round(mp, 2) if big else 1.0,
+                    "denoise": req.denoise or (0.25 if m and m.family.id == "illustrious" else 0.33)}
+        job = Job(id=uuid.uuid4().hex[:12], kind="upscale", request=req.model_dump(), decision=decision)
+        return self._enqueue(job)
+
+    async def _run_upscale(self, job: Job) -> None:
+        req = UpscaleRequest(**job.request)
+        src = self.library.get(req.image_id)
+        path = self.library.path(req.image_id)
+        if not src or not path:
+            raise ComfyError("이미지가 사라졌어요")
+        d = job.decision
+        model = self.registry.get(d["model_id"]) if d.get("model_id") else None
+        prompt = req.prompt.strip() or src.get("prompt_en") or src.get("prompt") or ""
+        if model:
+            prompt = await self._maybe_translate(job, prompt, model.family.id, None)
+            await self._switch_family(model.family.id)
+        name = await self.comfy.upload_image(path.read_bytes(), f"{src['id']}.png")
+        job.message = "키우는 중"
+        graph, extra = workflows.upscale(name, self.registry.tool_file("upscale"), req.scale, model, prompt,
+                                         d["denoise"], random.randint(0, 2**31 - 1), self.settings.models_dir,
+                                         megapixels=d.get("megapixels", 1.0))
+        outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=3600)
+        data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+        rec = self.library.add(data, {
+            "kind": "edit", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
+            "model_id": src.get("model_id"), "family": src.get("family"), "style": src.get("style"),
+            "label": f"업스케일 {req.scale}배", "edit_prompt": req.prompt, "final_prompt": extra["final_prompt"],
+            "edit": {"mode": "upscale", "scale": req.scale, "refine": model is not None, "denoise": d["denoise"]},
+        })
+        job.result_ids.append(rec["id"])
+
     # ------------------------------------------------------------ detail pass
     def _detail_model(self, src: dict, requested: str):
         if requested and requested != "auto":
@@ -873,6 +933,8 @@ class Engine:
                     await self._run_train(job)
                 elif job.kind == "detail":
                     await self._run_detail(job)
+                elif job.kind == "upscale":
+                    await self._run_upscale(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -1168,6 +1230,10 @@ class Engine:
             edit = rec.get("edit") or {}
             if edit.get("mode") == "character_sheet":
                 raise ValueError("캐릭터 사진은 캐릭터 만들기로 다시 만들어 주세요")
+            if edit.get("mode") == "upscale":
+                return self.submit_upscale(UpscaleRequest(image_id=rec["parent_id"], scale=edit.get("scale") or 2,
+                                                          refine=edit.get("refine"), denoise=edit.get("denoise"),
+                                                          prompt=rec.get("edit_prompt") or ""))
             if edit.get("mode") == "detail":
                 from .detail import DetailRequest
                 return self.submit_detail(DetailRequest(image_id=rec["parent_id"], targets=edit.get("targets") or ["face"],

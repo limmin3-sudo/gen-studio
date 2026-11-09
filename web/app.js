@@ -399,7 +399,7 @@ const Editor = (() => {
   const hasSel = () => painted || segSel.length > 0;
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
-  let detStrength = store.get('detStrength', 0.4);
+  let detStrength = store.get('detStrength', 0.4), upRefine = store.get('upRefine', true);
   const STRENGTH = {low: [0.35, '약하게'], mid: [0.55, '보통'], high: [0.75, '강하게']};
   let editMode = store.get('editMode', 'instruction');     // instruction (Qwen) | redraw (same model)
   let expandAspect = '3:4', expandAnchor = 'top';
@@ -475,6 +475,10 @@ const Editor = (() => {
     h += `<label class="switch" style="margin:4px 0 16px"><input type="checkbox" id="autoFillToggle" ${autoFill ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>`;
     if (rec) {
       const model = MODELS.find(m => m.id === rec.model_id);
+      h += `<h2>업스케일</h2>
+        <p class="note">크게 키운 뒤 피부·머리카락·옷감 디테일을 살짝 다시 그립니다. 새 버전으로 저장돼요. (지금 ${rec.width}×${rec.height})</p>
+        <div class="field"><div class="seg2"><button data-up="2">2배 (약 2K)</button><button data-up="4">4배 (약 4K)</button></div></div>
+        <label class="switch" style="margin:0 0 16px"><input type="checkbox" id="upRefine" ${upRefine ? 'checked' : ''}><span>디테일 다시 그리기 (끄면 그냥 선명하게만 키움)</span></label>`;
       h += `<h2>디테일 보정</h2>
         <p class="note">작게 나온 얼굴·눈·손을 찾아 크게 다시 그린 뒤 제자리에 붙입니다. 전신이나 여러 명 나온 사진에 좋아요. 아래 입력칸에 "미소", "푸른 눈"처럼 덧붙일 수 있어요.</p>
         <div class="field"><div class="seg2"><button data-det="face">얼굴</button><button data-det="face,eyes">얼굴+눈</button><button data-det="hands">손</button><button data-det="face,eyes,hands">전부</button></div></div>
@@ -503,7 +507,10 @@ const Editor = (() => {
   pane.addEventListener('pointerleave', () => { if (segHover) { segHover = null; paintSegLayer(); } });
   pane.addEventListener('keydown', e => { if (e.target.id === 'segFind' && e.key === 'Enter') { e.preventDefault(); $('#findSeg').click(); } });
   pane.addEventListener('input', e => { if (e.target.id === 'bSize') { brushSize = +e.target.value; $('#bSizeV').textContent = brushSize; store.set('brush', brushSize); } });
-  pane.addEventListener('change', e => { if (e.target.id === 'autoFillToggle') setAutoFill(e.target.checked); });
+  pane.addEventListener('change', e => {
+    if (e.target.id === 'autoFillToggle') setAutoFill(e.target.checked);
+    if (e.target.id === 'upRefine') { upRefine = e.target.checked; store.set('upRefine', upRefine); }
+  });
   pane.addEventListener('click', e => {
     const g = e.target.closest('[data-goto]'); if (g) setTool(g.dataset.goto);
     const sd = e.target.closest('[data-sdel]'); if (sd) { selectSeg(sd.dataset.sdel, false); startDelete(); return; }
@@ -517,6 +524,12 @@ const Editor = (() => {
     const asp = e.target.closest('[data-asp]'); if (asp) { expandAspect = asp.dataset.asp; paintPane(); }
     const anc = e.target.closest('[data-anc]'); if (anc) { expandAnchor = anc.dataset.anc; paintPane(); }
     if (e.target.closest('#doExpand')) submitEdit({mode: 'outpaint', aspect: expandAspect, anchor: expandAnchor, prompt: promptEl.value.trim()});
+    const up = e.target.closest('[data-up]');
+    if (up && rec && !busy) {
+      api.post(`/api/images/${rec.id}/upscale`, {scale: +up.dataset.up, refine: upRefine, prompt: promptEl.value.trim()})
+        .then(j => runJob(j, `${j.decision.action} · ${j.decision.width}×${j.decision.height}`)).catch(err => toast(err.message, 6000));
+      return;
+    }
     const ds = e.target.closest('[data-dstr]'); if (ds) { detStrength = +ds.dataset.dstr; store.set('detStrength', detStrength); paintPane(); return; }
     const det = e.target.closest('[data-det]');
     if (det && rec && !busy) {
