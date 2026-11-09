@@ -504,7 +504,7 @@ const Settings = (() => {
   }
   async function checkUpdate() {
     busyAct = 'check'; paint();
-    try { latest = await api.get('/api/app/latest'); } catch (e) { toast(e.message); }
+    try { latest = await api.get('/api/app/latest'); latest.checked = Date.now(); } catch (e) { toast(e.message); }
     busyAct = ''; paint();
   }
   function card(title, inner, cls = '') { return `<div class="scard ${cls}"><h3>${title}</h3>${inner}</div>`; }
@@ -515,7 +515,9 @@ const Settings = (() => {
     const upd = latest
       ? (latest.update_available ? `<p><b>새 버전이 있어요.</b> ${esc(latest.latest.message)} <span class="hint">(${new Date(latest.latest.date).toLocaleString()})</span></p>
           <div class="row"><button class="btn primary" data-act="update">지금 업데이트</button><span class="hint">앱이 잠깐 꺼졌다 다시 켜져요 (1~2분)</span></div>`
-        : (latest.latest ? '<p>최신 버전이에요.</p>' : '<p class="hint">GitHub에 연결하지 못했어요. 인터넷 연결을 확인하세요.</p>'))
+        : (latest.latest ? `<p>최신 버전이에요. <span class="hint">(${new Date(latest.checked).toLocaleTimeString()} 확인)</span></p>
+            <div class="row"><button class="btn" data-act="check" ${busyAct === 'check' ? 'disabled' : ''}>${busyAct === 'check' ? '확인 중…' : '다시 확인'}</button></div>`
+          : '<p class="hint">GitHub에 연결하지 못했어요. 인터넷 연결을 확인하세요.</p><div class="row"><button class="btn" data-act="check">다시 확인</button></div>'))
       : `<div class="row"><button class="btn" data-act="check" ${busyAct === 'check' ? 'disabled' : ''}>${busyAct === 'check' ? '확인 중…' : '업데이트 확인'}</button></div>`;
     const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
     const eta = d.speed > 0 ? Math.max(0, Math.round((d.total - d.done) / d.speed / 60)) : null;
@@ -575,7 +577,10 @@ const Settings = (() => {
     const act = b.dataset.act;
     try {
       if (act === 'check') return checkUpdate();
-      if (act === 'update') { const r = await api.post('/api/app/update'); toast(r.message, 15000); b.disabled = true; return; }
+      if (act === 'update') {
+        if (info.downloads.running && b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = '받는 중인 모델은 멈췄다 이어 받아요. 한 번 더 누르면 업데이트'; return; }
+        const r = await api.post('/api/app/update'); toast(r.message, 15000); b.disabled = true; return;
+      }
       if (act === 'add-model') {
         const url = $('#addModelUrl').value.trim(); if (!url) return;
         b.disabled = true;
@@ -599,7 +604,7 @@ const Settings = (() => {
       if (act === 'logs') return api.post('/api/app/open-logs');
     } catch (err) { toast(err.message, 6000); }
   });
-  return {active(v) { on = v; clearTimeout(timer); if (v) { load(); if (!latest) checkUpdate(); } }};
+  return {active(v) { on = v; clearTimeout(timer); if (v) { load(); if (!latest || Date.now() - latest.checked > 60000) checkUpdate(); } }};
 })();
 
 async function importFile(file) {

@@ -189,7 +189,7 @@ def local_version() -> dict:
 async def latest_version() -> dict | None:
     try:
         async with httpx.AsyncClient(timeout=10, headers={"Accept": "application/vnd.github+json",
-                                                          "User-Agent": "gen-studio"}) as c:
+                                                          "User-Agent": "gen-studio", "Cache-Control": "no-cache"}) as c:
             r = await c.get(f"https://api.github.com/repos/{REPO}/commits/main")
             if r.status_code != 200:
                 return None
