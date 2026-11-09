@@ -102,9 +102,13 @@ function renderBanner() {
   if (!b) { b = document.createElement('div'); b.className = 'banner'; $('.top').after(b); }
   b.innerHTML = `<div>${msgs.join('<br>')}</div>`;
 }
-function fillModelSelect() {
-  const sel = $('#genModel'); if (sel.options.length > 1) return;
+function fillModelSelect(force) {
+  const sel = $('#genModel');
+  if (!force && sel.options.length === MODELS.length + 1) return;
+  const keep = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
   for (const m of MODELS) sel.add(new Option(`${m.name} — ${m.best_for || ''}${m.installed === false ? ' (미설치)' : ''}`, m.id));
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'auto';
 }
 function markRecommended(sel, recId, autoLabel = '자동') {
   // "★ 추천" on the recommended model; the auto entry says which one it will use
@@ -488,7 +492,11 @@ const Settings = (() => {
   let info = null, latest = null, timer = null, on = false, busyAct = '';
   const human = n => n >= 1e9 ? (n / 1073741824).toFixed(1) + 'GB' : n >= 1e6 ? (n / 1048576).toFixed(0) + 'MB' : (n / 1024).toFixed(0) + 'KB';
   async function load() {
-    try { info = await api.get('/api/app/info'); info.unused = await api.get('/api/app/models/unused').catch(() => null); }
+    try {
+      info = await api.get('/api/app/info');
+      [info.unused, info.added] = await Promise.all([api.get('/api/app/models/unused').catch(() => null),
+                                                    api.get('/api/app/models/added').then(r => r.models).catch(() => [])]);
+    }
     catch (e) { body.innerHTML = `<div class="scard"><h3>설정은 PC에서만</h3><p class="hint">${esc(e.message)}</p></div>`; return; }
     paint();
     clearTimeout(timer);
@@ -523,6 +531,10 @@ const Settings = (() => {
       + (d.finished && d.failed && d.failed.length ? `<p class="warn">받지 못한 파일: ${d.failed.map(esc).join('<br>')}</p>` : '')
       + (d.error ? `<p class="warn">${esc(d.error)}</p><div class="row"><input id="civKey" type="password" placeholder="Civitai API 키 붙여넣기"><button class="btn" data-act="civkey">저장</button></div>
          <p class="hint">civitai.com 로그인 → 오른쪽 위 프로필 → Settings → API Keys → Add API key</p>` : '');
+    const added = info.added || [];
+    const addHtml = `<div class="addm"><p class="hint" style="margin-top:12px">Civitai 체크포인트 주소를 붙여넣으면 목록에 추가하고 바로 받아요. Z-Image Turbo, Illustrious·SDXL·Pony, Qwen 2.1 계열만 돼요.</p>
+      <div class="row"><input id="addModelUrl" placeholder="https://civitai.red/models/…"><button class="btn" data-act="add-model">추가</button></div>
+      ${added.length ? `<ul class="mlist">${added.map(m => `<li>${esc(m.name)} <span class="hint">${m.installed ? '받음' : '받는 중/대기'}${m.note ? ' · ' + esc(m.note) : ''}</span> <button class="ghost" data-act="rm-model" data-id="${esc(m.id)}">빼기</button></li>`).join('')}</ul>` : ''}</div>`;
     const un = info.unused;
     const unusedHtml = un && un.files.length
       ? `<details class="unused"><summary>안 쓰는 모델 파일 <b>${un.files.length}개</b> · ${human(un.bytes)} <span class="hint">(예전 모델·받다 만 파일)</span></summary>
@@ -549,7 +561,7 @@ const Settings = (() => {
       <p class="hint">문제가 생기면 진단 정보를 복사해 대화창에 붙여넣어 주세요. 로그: ${esc(info.logs)}</p>`;
     body.innerHTML = [
       card('업데이트', (info.last_error ? `<p class="warn">지난 업데이트 실패: ${esc(info.last_error)}</p>` : '') + upd),
-      card('모델', models + unusedHtml), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('문제 해결', help),
+      card('모델', models + addHtml + unusedHtml), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('문제 해결', help),
     ].join('');
   }
   body.addEventListener('change', async e => {
@@ -564,6 +576,14 @@ const Settings = (() => {
     try {
       if (act === 'check') return checkUpdate();
       if (act === 'update') { const r = await api.post('/api/app/update'); toast(r.message, 15000); b.disabled = true; return; }
+      if (act === 'add-model') {
+        const url = $('#addModelUrl').value.trim(); if (!url) return;
+        b.disabled = true;
+        try { const r = await api.post('/api/app/models/add', {url}); toast(`'${r.model.name}'을(를) 추가했어요.${r.downloading ? ' 받기 시작했어요.' : ''}`, 6000); MODELS = await api.get('/api/models'); fillModelSelect(true); }
+        finally { b.disabled = false; }
+        return load();
+      }
+      if (act === 'rm-model') { await api.del(`/api/app/models/added/${b.dataset.id}`); MODELS = await api.get('/api/models'); fillModelSelect(true); return load(); }
       if (act === 'unused-del') {
         if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = '정말 지울까요? 한 번 더 누르기'; return; }
         const r = await api.post('/api/app/models/unused/delete', {paths: info.unused.files.map(f => f.path)});

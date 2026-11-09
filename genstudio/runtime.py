@@ -274,6 +274,11 @@ class Downloads:
                         st["failed"].append(f"{f.name}: {e}")
         finally:
             st.update(running=False, finished=True)
+            try:
+                from . import user_models
+                user_models.fix_locations(self.reg, self.s.models_dir)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ------------------------------------------------------------------ unused model files

@@ -149,6 +149,36 @@ def register(app: FastAPI, state) -> None:
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    @app.get("/api/app/models/added")
+    async def app_models_added(request: Request):
+        local_only(request)
+        from . import user_models
+        md = s.models_dir
+        return {"models": [{**e, "installed": state.registry.by_id[e["id"]].installed(md) if e["id"] in state.registry.by_id else None}
+                           for e in user_models.entries()]}
+
+    @app.post("/api/app/models/add")
+    async def app_models_add(body: dict, request: Request):
+        """Paste a Civitai checkpoint link: it joins the model list and starts downloading."""
+        local_only(request)
+        from . import user_models
+        try:
+            e = await user_models.add_from_civitai(state.registry, str(body.get("url") or ""),
+                                                   transport=state.extra.get("civitai_transport"))
+        except ValueError as err:
+            raise HTTPException(400, str(err))
+        started = False
+        if s.models_dir and not downloads.state.get("running"):
+            downloads.start()
+            started = True
+        return {"model": e, "downloading": started}
+
+    @app.delete("/api/app/models/added/{model_id}")
+    async def app_models_remove(model_id: str, request: Request):
+        local_only(request)
+        from . import user_models
+        return {"removed": user_models.remove(state.registry, model_id)}
+
     @app.get("/api/app/models/unused")
     async def app_models_unused(request: Request):
         local_only(request)

@@ -44,6 +44,9 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
     from .diagnostics import install as _keep_logs
     _keep_logs()
     registry = Registry.load()
+    from . import user_models
+    user_models.merge(registry)                 # models added from the settings screen
+    user_models.fix_locations(registry, settings.models_dir)
     library = Library(settings.output_dir)
     comfy = ComfyClient(settings.comfy_url, transport=comfy_transport)
     engine = Engine(settings, registry, library, comfy)

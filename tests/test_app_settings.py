@@ -58,3 +58,40 @@ def test_unused_model_files(client, settings, tmp_path):
     assert r["bytes"] == 110
     d = client.post("/api/app/models/unused/delete", json={"paths": ["diffusion_models/old_model.safetensors", "vae/ae.safetensors", "../../etc/passwd"]}).json()
     assert d["deleted"] == 1 and keep.exists() and not (md / "diffusion_models" / "old_model.safetensors").exists()
+
+
+def test_add_model_from_civitai_link(client, settings, monkeypatch, tmp_path):
+    import httpx
+    monkeypatch.setattr("genstudio.config.DATA_DIR", tmp_path)
+
+    def civitai(req: httpx.Request):
+        u = str(req.url)
+        if u.endswith("/model-versions/2728617"):
+            return httpx.Response(200, json={"id": 2728617, "modelId": 1025051, "name": "v21", "baseModel": "Illustrious",
+                                             "model": {"name": "Illustrij", "type": "Checkpoint"},
+                                             "files": [{"name": "Illustrijv21.safetensors", "type": "Model", "primary": True,
+                                                        "sizeKB": 7245902.25, "hashes": {"SHA256": "AB"}, "metadata": {"fp": "fp16"}}]})
+        if u.endswith("/model-versions/9"):
+            return httpx.Response(200, json={"id": 9, "modelId": 8, "name": "v1", "baseModel": "Flux.1 D",
+                                             "model": {"name": "X", "type": "Checkpoint"}, "files": []})
+        if u.endswith("/model-versions/7"):
+            return httpx.Response(200, json={"id": 7, "modelId": 6, "name": "Turbo", "baseModel": "Qwen 2.1",
+                                             "model": {"name": "QQ", "type": "Checkpoint"},
+                                             "files": [{"name": "q.gguf", "type": "Model", "metadata": {}},
+                                                       {"name": "q_bf16.safetensors", "type": "Diffusion Model", "sizeKB": 13e6, "metadata": {"fp": "bf16"}},
+                                                       {"name": "q_fp8.safetensors", "type": "Diffusion Model", "sizeKB": 7e6, "metadata": {"fp": "fp8"}, "primary": False}]})
+        return httpx.Response(404, json={})
+    client.app.state.gs.extra["civitai_transport"] = httpx.MockTransport(civitai)
+
+    r = client.post("/api/app/models/add", json={"url": "https://civitai.red/models/1025051/illustrij?modelVersionId=2728617"}).json()
+    m = r["model"]
+    assert m["family"] == "illustrious" and m["style"] == "semi" and m["file"]["dir"] == "checkpoints"
+    assert any(x["id"] == m["id"] for x in client.get("/api/models").json())
+    assert client.post("/api/route", json={"prompt": "x", "model": m["id"]}).json()["model_id"] == m["id"]
+    q = client.post("/api/app/models/add", json={"url": "https://civitai.com/models/6?modelVersionId=7"}).json()["model"]
+    assert q["family"] == "qwen21" and q["file"]["name"] == "q_fp8.safetensors" and "text" in q["also"]
+    bad = client.post("/api/app/models/add", json={"url": "https://civitai.com/models/8?modelVersionId=9"})
+    assert bad.status_code == 400 and "Flux" in bad.json()["detail"]
+    assert [x["id"] for x in client.get("/api/app/models/added").json()["models"]] == [m["id"], q["id"]]
+    assert client.delete(f"/api/app/models/added/{m['id']}").json()["removed"]
+    assert all(x["id"] != m["id"] for x in client.get("/api/models").json())
