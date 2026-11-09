@@ -301,6 +301,14 @@ MODIFY_RX = _re.compile(r"더|좀|조금|약간|살짝|하게|키워|줄여|늘�
 
 
 # requests that make something bigger need room around the selection, or the new shape is cut at its edge
+# asking for a different body posture: a masked redraw can't move limbs outside their old outline, so these
+# requests go to "자세 바꾸기" (whole picture redrawn, same person/clothes/background)
+POSE_RX = _re.compile(r"자세|포즈|앉[아게은혀히는]|앉도록|누워|눕[게혀는]|엎드|무릎\s*꿇|쪼그려|쪼그리|"
+                      r"다리\s*를?\s*(\S+\s+){0,2}(벌|꼬|모아|들어|올려|뻗)|양\s*다리|팔\s*을?\s*(\S+\s+){0,3}(들|올려|벌|뻗|모아)|"
+                      r"뒤\s*돌|돌아\s*서|돌아\s*보|옆으로\s*(누|서|돌)|일어서|기대[어게]|점프|"
+                      r"\bsit(ting)?\b|\bkneel|\blying\b|\blie down|\bsquat|(spread|cross)\w*\s+(\w+\s+)?legs|"
+                      r"turn(ing)?\s+around|\bpose\b|\bposture\b|\bbend(ing)?\s+over", _re.I)
+
 ENLARGE_RX = _re.compile(r"키워|키우|크게|커지|늘려|늘리|길게|굵게|두껍|풍성|볼륨|넓게|부풀|bigger|larger|longer|thicker|"
                          r"fuller|wider|taller|enlarge|increase|grow", _re.I)
 
@@ -617,6 +625,10 @@ class Engine:
                 self.segments.union_mask(req.image_id, req.segments)).decode()})
         if req.mode == "inpaint" and not req.mask_png:
             raise ValueError("다시 그릴 영역(마스크)이 없어요. 브러시로 영역을 칠하거나 세그먼트를 선택하세요.")
+        if req.mode == "inpaint" and req.fill == "prompt" and req.prompt.strip() and POSE_RX.search(req.prompt):
+            job = self.submit_repose(ReposeRequest(image_id=req.image_id, prompt=req.prompt.strip()))
+            job.decision["reasons"] = ["자세를 바꾸는 요청이라 고른 영역만이 아니라 그림 전체를 다시 그려요"]
+            return job
         if req.mode == "inpaint" and req.fill == "prompt" and not req.prompt.strip():
             raise ValueError("무엇을 그릴지 입력하거나 '모델이 알아서 채우기'를 고르세요.")
         extra: dict = {}

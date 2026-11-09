@@ -202,3 +202,19 @@ def test_enhance_edit_request(client, fake):
     gen = next(n for n in g.values() if n["class_type"] == "TextGenerateV2")["inputs"]
     assert "selected area (white collared shirt)" in gen["prompt"] and "셔츠 빨간색으로" in gen["prompt"]
     assert client.post("/api/enhance-edit", json={"prompt": " "}).status_code == 400
+
+
+def test_pose_requests_on_a_selection_redraw_the_whole_picture(client, fake):
+    img = imported(client, 512, 768)
+    segment(client, img)
+    j = client.post("/api/edit", json={"image_id": img, "segments": ["woman"], "prompt": "의자에 앉아 다리를 꼬고"}).json()
+    assert j["kind"] == "repose" and "그림 전체" in j["decision"]["reasons"][0]
+    j = wait_job(client, j["id"])
+    assert j["status"] == "done", j["error"]
+    g = last_graph(fake)
+    enc = nodes(g, "TextEncodeQwenImage21")[0]
+    assert "Change the pose of the person in image 1" in enc["prompt"] and "images.image_2" not in enc
+    assert "SetLatentNoiseMask" not in [n["class_type"] for n in g.values()]
+    # an ordinary change on the selection stays a masked edit
+    e = client.post("/api/edit", json={"image_id": img, "segments": ["white collared shirt"], "prompt": "빨간색으로"}).json()
+    assert e["kind"] == "edit"
