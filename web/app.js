@@ -92,12 +92,12 @@ function renderBanner() {
   let b = document.querySelector('.banner');
   const msgs = [];
   if (STATUS && !STATUS.comfyui.connected)
-    msgs.push(`<b>ComfyUI가 꺼져 있어요.</b> 생성하려면 <code>start.bat</code>으로 실행하세요. (${esc(STATUS.comfyui.url)})`);
+    msgs.push(`<b>ComfyUI가 꺼져 있어요.</b> 막 켰다면 잠시 기다려 주세요. 계속 꺼져 있으면 <a href="#settings">설정</a>에서 다시 켤 수 있어요.`);
   const missing = MODELS.filter(m => m.installed === false);
   if (missing.length === MODELS.length && MODELS.length)
-    msgs.push(`<b>아직 받은 모델이 없어요.</b> <code>install.bat</code>을 실행하면 모델을 자동으로 받습니다.`);
+    msgs.push(`<b>아직 받은 모델이 없어요.</b> <a href="#settings">설정</a>에서 모델 받기를 누르세요.`);
   else if (missing.length)
-    msgs.push(`받지 않은 모델: ${missing.map(m => esc(m.name)).join(', ')}. 자동 선택은 받은 모델 중에서 고릅니다.`);
+    msgs.push(`받지 않은 모델: ${missing.map(m => esc(m.name)).join(', ')}. <a href="#settings">설정</a>에서 받을 수 있어요.`);
   if (!msgs.length) { b?.remove(); return; }
   if (!b) { b = document.createElement('div'); b.className = 'banner'; $('.top').after(b); }
   b.innerHTML = `<div>${msgs.join('<br>')}</div>`;
@@ -116,18 +116,20 @@ function markRecommended(sel, recId, autoLabel = '자동') {
 }
 
 /* --------------------------------------------------------------- router */
-const VIEWS = {generate: $('#genView'), edit: $('#editView'), gallery: $('#galleryView'), loras: $('#lorasView')};
+const VIEWS = {generate: $('#genView'), edit: $('#editView'), gallery: $('#galleryView'), loras: $('#lorasView'), settings: $('#settingsView')};
 function route() {
   const h = location.hash.slice(1);
   let view = 'generate', arg = null;
   if (h.startsWith('edit=')) { view = 'edit'; arg = h.slice(5); }
   else if (h === 'gallery') view = 'gallery';
   else if (h === 'loras') view = 'loras';
+  else if (h === 'settings') view = 'settings';
   for (const [k, el] of Object.entries(VIEWS)) el.hidden = k !== view;
   document.querySelectorAll('.tabs a').forEach(a => { if (a.dataset.view === view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   if (view === 'generate') Gen.show();
   if (view === 'gallery') Gallery.show();
   if (view === 'loras') LoraPage.show();
+  Settings.active(view === 'settings');
   if (view === 'edit') Editor.open(arg);
 }
 window.addEventListener('hashchange', route);
@@ -478,6 +480,95 @@ const LoraPage = (() => {
     Gallery.show();
   });
   return {show};
+})();
+
+/* =============================================================== settings */
+const Settings = (() => {
+  const body = $('#setBody');
+  let info = null, latest = null, timer = null, on = false, busyAct = '';
+  const human = n => n >= 1e9 ? (n / 1073741824).toFixed(1) + 'GB' : n >= 1e6 ? (n / 1048576).toFixed(0) + 'MB' : (n / 1024).toFixed(0) + 'KB';
+  async function load() {
+    try { info = await api.get('/api/app/info'); }
+    catch (e) { body.innerHTML = `<div class="scard"><h3>설정은 PC에서만</h3><p class="hint">${esc(e.message)}</p></div>`; return; }
+    paint();
+    clearTimeout(timer);
+    if (on) timer = setTimeout(load, info.downloads.running || /starting|updating/.test(info.comfy.state) ? 1000 : 4000);
+  }
+  async function checkUpdate() {
+    busyAct = 'check'; paint();
+    try { latest = await api.get('/api/app/latest'); } catch (e) { toast(e.message); }
+    busyAct = ''; paint();
+  }
+  function card(title, inner, cls = '') { return `<div class="scard ${cls}"><h3>${title}</h3>${inner}</div>`; }
+  function paint() {
+    if (!info) return;
+    $('#setVer').textContent = `v${info.version}${info.commit ? ' · ' + info.commit.slice(0, 7) : ''}`;
+    const d = info.downloads, mm = info.models.missing, c = info.comfy, r = info.remote;
+    const upd = latest
+      ? (latest.update_available ? `<p><b>새 버전이 있어요.</b> ${esc(latest.latest.message)} <span class="hint">(${new Date(latest.latest.date).toLocaleString()})</span></p>
+          <div class="row"><button class="btn primary" data-act="update">지금 업데이트</button><span class="hint">앱이 잠깐 꺼졌다 다시 켜져요 (1~2분)</span></div>`
+        : (latest.latest ? '<p>최신 버전이에요.</p>' : '<p class="hint">GitHub에 연결하지 못했어요. 인터넷 연결을 확인하세요.</p>'))
+      : `<div class="row"><button class="btn" data-act="check" ${busyAct === 'check' ? 'disabled' : ''}>${busyAct === 'check' ? '확인 중…' : '업데이트 확인'}</button></div>`;
+    const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
+    const eta = d.speed > 0 ? Math.max(0, Math.round((d.total - d.done) / d.speed / 60)) : null;
+    const models = d.running
+      ? `<p>받는 중 <b>${d.index}/${d.count}</b> · ${esc(d.file)}</p><div class="pbar"><i style="width:${pct}%"></i></div>
+         <p class="hint">${pct}% · ${human(d.done)} / ${human(d.total)} · ${human(d.speed)}/s${eta !== null ? ` · 남은 시간 약 ${eta}분` : ''}</p>
+         <div class="row"><button class="btn" data-act="dl-cancel">멈추기</button><span class="hint">멈춰도 다음에 이어서 받아요</span></div>`
+      : (mm.length
+        ? `<p>받지 않은 파일 <b>${mm.length}개</b> · 합계 <b>${human(info.models.missing_bytes)}</b></p>
+           <details><summary class="hint">목록 보기</summary><ul class="mlist">${mm.map(m => `<li>${esc(m.file)} <span class="hint">${human(m.size)} · ${esc(m.label)}</span></li>`).join('')}</ul></details>
+           <div class="row"><button class="btn primary" data-act="dl">모두 받기</button></div>`
+        : '<p>필요한 모델을 모두 받았어요. ✓</p>')
+      + (d.finished && d.failed && d.failed.length ? `<p class="warn">받지 못한 파일: ${d.failed.map(esc).join('<br>')}</p>` : '')
+      + (d.error ? `<p class="warn">${esc(d.error)}</p><div class="row"><input id="civKey" type="password" placeholder="Civitai API 키 붙여넣기"><button class="btn" data-act="civkey">저장</button></div>
+         <p class="hint">civitai.com 로그인 → 오른쪽 위 프로필 → Settings → API Keys → Add API key</p>` : '');
+    const cs = {running: ['ok', '켜져 있음'], starting: ['', '켜는 중…'], updating: ['', '업데이트 중… (몇 분)'], stopped: ['bad', '꺼짐'],
+                missing: ['bad', '설치 안 됨'], error: ['bad', '문제 있음'], unknown: ['', '확인 중']}[c.alive ? 'running' : c.state] || ['', c.state];
+    const comfy = `<p><i class="dot ${cs[0]}"></i> ${cs[1]}${c.message ? ` <span class="hint">${esc(c.message)}</span>` : ''}</p>
+      <div class="row"><button class="btn" data-act="comfy-restart">다시 켜기</button><button class="btn" data-act="comfy-update">ComfyUI 업데이트</button></div>
+      <p class="hint">새 기능(배경 제거, LoRA 학습, 포즈, 영상)이 안 되면 ComfyUI 업데이트를 눌러 보세요. 몇 분 걸리고, 그동안 생성은 멈춰요.</p>`;
+    const remote = !r.tailscale
+      ? `<p>Tailscale이 설치돼 있지 않아요.</p><p class="hint">tailscale.com 에서 설치하고 같은 계정으로 폰·노트북에도 로그인하면, 밖에서도 이 PC의 Gen Studio를 쓸 수 있어요.</p>`
+      : `<label class="switch"><input type="checkbox" id="remoteOn" ${r.on ? 'checked' : ''}><span>폰·노트북에서 접속 허용</span></label>
+         ${!r.logged_in ? '<p class="warn">Tailscale에 로그인돼 있지 않아요. 작업 표시줄의 Tailscale 아이콘에서 로그인하세요.</p>' : ''}
+         ${r.on && r.link ? `<div class="qr"><img src="/api/app/remote/qr?t=${Date.now() >> 14}" alt="접속 QR 코드"><div>
+            <p>폰 카메라로 QR을 찍거나 아래 주소를 여세요. 한 번 열면 그 기기는 기억돼요.</p>
+            <div class="row"><input readonly value="${esc(r.link)}" id="remoteLink"><button class="btn" data-act="copy-link">복사</button></div>
+            <p class="hint">이 주소에는 접속 열쇠가 들어 있어요. 다른 사람에게 보내지 마세요.</p></div></div>` : ''}`;
+    const codex = `<p>${info.codex.connected ? '<i class="dot ok"></i> 연결돼 있어요' : '<i class="dot"></i> 아직 연결 안 됨'}</p>
+      <div class="row"><button class="btn ${info.codex.connected ? '' : 'primary'}" data-act="codex">${info.codex.connected ? '다시 연결' : 'Codex에 연결하기'}</button></div>
+      <p class="hint">연결한 뒤 Codex 앱을 완전히 껐다 켜면 "Gen Studio" 도구가 보여요. 주소: ${esc(info.codex.url)}</p>`;
+    const help = `<div class="row"><button class="btn" data-act="diag">진단 정보 복사</button>${info.desktop ? '<button class="btn" data-act="logs">로그 폴더 열기</button>' : ''}</div>
+      <p class="hint">문제가 생기면 진단 정보를 복사해 대화창에 붙여넣어 주세요. 로그: ${esc(info.logs)}</p>`;
+    body.innerHTML = [
+      card('업데이트', (info.last_error ? `<p class="warn">지난 업데이트 실패: ${esc(info.last_error)}</p>` : '') + upd),
+      card('모델', models), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('문제 해결', help),
+    ].join('');
+  }
+  body.addEventListener('change', async e => {
+    if (e.target.id !== 'remoteOn') return;
+    e.target.disabled = true;
+    try { const r = await api.post('/api/app/remote', {on: e.target.checked}); if (!r.ok && r.message) toast(r.message, 8000); } catch (err) { toast(err.message, 6000); }
+    load();
+  });
+  body.addEventListener('click', async e => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    const act = b.dataset.act;
+    try {
+      if (act === 'check') return checkUpdate();
+      if (act === 'update') { const r = await api.post('/api/app/update'); toast(r.message, 15000); b.disabled = true; return; }
+      if (act === 'dl') { await api.post('/api/app/models/download'); return load(); }
+      if (act === 'dl-cancel') { await api.post('/api/app/models/cancel'); return load(); }
+      if (act === 'civkey') { await api.post('/api/app/civitai-key', {key: $('#civKey').value}); toast('저장했어요. 모두 받기를 다시 누르세요.'); return load(); }
+      if (act === 'comfy-restart' || act === 'comfy-update') { await api.post(`/api/app/comfy/${act.slice(6)}`); return load(); }
+      if (act === 'codex') { const r = await api.post('/api/app/codex'); toast(r.message, 7000); return load(); }
+      if (act === 'copy-link') { await navigator.clipboard.writeText($('#remoteLink').value).catch(() => {}); toast('복사했어요'); return; }
+      if (act === 'diag') return copyDiagnostics();
+      if (act === 'logs') return api.post('/api/app/open-logs');
+    } catch (err) { toast(err.message, 6000); }
+  });
+  return {active(v) { on = v; clearTimeout(timer); if (v) { load(); if (!latest) checkUpdate(); } }};
 })();
 
 async function importFile(file) {

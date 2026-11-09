@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gen Studio</title>
+  <link rel="icon" href="icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
@@ -17,6 +18,7 @@
       <a href="#generate" data-view="generate">생성</a>
       <a href="#gallery" data-view="gallery">갤러리</a>
       <a href="#loras" data-view="loras">LoRA</a>
+      <a href="#settings" data-view="settings">설정</a>
     </nav>
     <div class="spacer"></div>
     <span class="status" id="status"><i class="dot"></i><span>연결 확인 중</span></span>
@@ -149,6 +151,12 @@
       </details>
       <div id="loraDl"></div>
       <div class="lgrid" id="loraGrid"></div>
+    </section>
+
+    <!-- ======================= settings ======================= -->
+    <section class="gallery settings" id="settingsView" hidden>
+      <header><h2>설정</h2><span class="hint" id="setVer"></span></header>
+      <div class="sgrid" id="setBody"><p class="hint">불러오는 중…</p></div>
     </section>
 
     <!-- ======================= gallery ======================= -->

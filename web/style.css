@@ -27,7 +27,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
 [hidden]{display:none!important}
 
-.shell{display:grid;grid-template-rows:auto minmax(0,1fr);height:100%}
+.shell{display:flex;flex-direction:column;height:100%}
+.shell > .view{flex:1 1 auto;min-height:0}
+.shell > .top,.shell > .banner{flex:none}
 .top{display:flex;align-items:center;gap:12px;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:var(--panel)}
 .brand{font-weight:600;font-size:15px;letter-spacing:-.01em;margin-right:6px}
 .tabs{display:flex;gap:4px}
@@ -296,3 +298,21 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .editor.is-video .tools [data-tool]{opacity:.35;pointer-events:none}
 .vt{position:relative}
 .vt .play{position:absolute;right:4px;bottom:4px;width:18px;height:18px;border-radius:9px;background:rgba(0,0,0,.65);color:#fff;font-size:9px;display:grid;place-items:center}
+
+/* settings */
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr));gap:12px;align-items:start}
+.scard{padding:16px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.scard h3{margin:0 0 10px;font-size:15px;font-weight:600}
+.scard p{margin:6px 0;font-size:13.5px;line-height:1.5}
+.scard .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 4px}
+.scard .row input{flex:1;min-width:0;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 10px;font:inherit;font-size:13px}
+.scard .warn{color:var(--danger)}
+.scard .dot{display:inline-block;vertical-align:middle;margin-right:4px}
+.pbar{height:8px;border-radius:4px;background:var(--chip);overflow:hidden;margin:8px 0}
+.pbar i{display:block;height:100%;background:var(--accent);transition:width .6s}
+.mlist{margin:6px 0 0;padding-left:18px;font-size:12.5px;max-height:180px;overflow:auto}
+.qr{display:flex;gap:14px;align-items:flex-start;margin-top:10px}
+.qr img{width:132px;height:132px;border-radius:10px;background:#fff;padding:4px;flex:none}
+.qr > div{min-width:0;flex:1}
+@media (max-width:520px){.qr{flex-direction:column}}
+.banner a{color:inherit;font-weight:600}
