@@ -56,7 +56,14 @@ def tailscale_url(port: int, enable: bool) -> str | None:
     except Exception:
         return None
     if enable:
-        subprocess.run([exe, "serve", "--bg", str(port)], capture_output=True, text=True, timeout=20)
+        r = subprocess.run([exe, "serve", "--bg", str(port)], capture_output=True, text=True, timeout=60)
+        msg = (r.stdout + r.stderr).strip()
+        if r.returncode != 0 or "http" in msg.lower() and "enable" in msg.lower():
+            # first use: Tailscale asks to switch on Serve/HTTPS for the tailnet and prints a link
+            print("\n  Tailscale 메시지:")
+            for line in msg.splitlines():
+                print("    " + line)
+            print("  위에 링크가 있으면 브라우저로 열어 승인한 뒤 start-remote.bat을 다시 실행하세요.")
     return f"https://{name}"
 
 
