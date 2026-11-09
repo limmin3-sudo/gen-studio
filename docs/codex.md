@@ -50,6 +50,17 @@ setx GEN_STUDIO_TOKEN "집 PC data\secrets.json 의 access_token 값"
 
 노트북에 이 저장소가 있으면 `python scripts/connect_codex.py --remote https://home-pc.tailXXXX.ts.net --token 토큰` 으로 위 작업을 한 번에 할 수 있습니다.
 
+## 대화창 안 편집 패널
+
+"이 이미지 세그먼트 편집기로 열어줘"라고 하면 `open_editor` 가 호출됩니다.
+
+- **패널을 지원하는 프로그램**(ChatGPT, Claude 등 MCP Apps 지원): 대화창 안에 이미지와 세그먼트 목록이 뜹니다.
+  목록이나 그림을 눌러 고르고, 🗑으로 삭제하고, 입력칸에 바꿀 내용을 쓰면 됩니다. 결과는 버전으로 쌓입니다.
+- **지원하지 않는 프로그램**: 번호가 칠해진 이미지와 목록, 그리고 브라우저 편집기 링크(`editor_url`)가 나옵니다.
+  "3번 빨간 재킷으로"처럼 대화로 하거나, 링크를 열어 같은 화면에서 작업하면 됩니다.
+
+Codex 앱이 패널을 띄우는지는 앱 버전에 따라 다릅니다. 한 번 시도해 보면 바로 알 수 있습니다.
+
 ## 쓸 수 있는 도구
 
 | 도구 | 하는 일 |
@@ -59,7 +70,12 @@ setx GEN_STUDIO_TOKEN "집 PC data\secrets.json 의 access_token 값"
 | `get_job_status` | 진행 상태 조회 (오래 걸리면 `job_id` 로 확인) |
 | `get_image` | 결과 이미지(미리보기)와 정보 |
 | `list_images` | 최근 이미지 목록 |
-| `list_models` | 모델 목록과 설치 여부 |
+| `list_models` | 모델 목록, 모델별로 잘하는 것, 설치 여부 |
+| `recommend_model` | 작업(생성, 부분 편집, 전체 다시 그리기, 문장 편집, 캔버스 늘리기)별 추천 모델과 이유 |
+| `segment_image` | 부분(사람, 머리카락, 옷 등) 찾기. 번호를 칠한 이미지와 목록을 돌려줌. 점(`points`)으로 클릭 선택도 가능 |
+| `open_editor` | 대화창 안 세그먼트 편집 패널 (지원하지 않으면 번호 이미지와 링크) |
+| `create_character` / `list_characters` | 캐릭터 등록과 목록. 이름은 대충 불러도 찾음 |
+| `export_image` | 원하는 폴더에 webp/png/jpg로 저장 (크기 지정, 덮어쓰기 확인) |
 
 결과 이미지는 Gen Studio 편집기에서도 바로 열립니다. 도구 결과의 `editor_url` 을 브라우저로 여세요.
 

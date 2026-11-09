@@ -98,3 +98,27 @@ def test_mcp_segment_then_edit(client):
     # second call reuses stored segments without a new job
     res = rpc(client, "tools/call", {"name": "segment_image", "arguments": {"image_id": img}})
     assert len(json.loads(res["content"][0]["text"])["segments"]) == 6
+
+
+def test_mcp_apps_panel(client):
+    init = rpc(client, "initialize", {"protocolVersion": "2025-06-18", "clientInfo": {"name": "t", "version": "1"},
+                                      "capabilities": {"extensions": {"io.modelcontextprotocol/ui": {
+                                          "mimeTypes": ["text/html;profile=mcp-app"]}}}})
+    assert init["serverInfo"]["name"] == "gen-studio"
+    tools = {t["name"]: t for t in rpc(client, "tools/list")["tools"]}
+    assert tools["open_editor"]["_meta"]["ui"]["resourceUri"] == "ui://gen-studio/panel.html"
+    assert tools["panel_state"]["_meta"]["ui"]["visibility"] == ["app"]
+    res = rpc(client, "resources/read", {"uri": "ui://gen-studio/panel.html"})
+    c = res["contents"][0]
+    assert c["mimeType"] == "text/html;profile=mcp-app" and "ui/initialize" in c["text"]
+
+    img = imported(client, 512, 768)
+    # before segments: open_editor still answers with a preview and the editor link
+    res = rpc(client, "tools/call", {"name": "open_editor", "arguments": {"image_id": img}})
+    info = json.loads(res["content"][0]["text"])
+    assert info["editor_url"].endswith(f"#edit={img}") and any(x["type"] == "image" for x in res["content"])
+    rpc(client, "tools/call", {"name": "segment_image", "arguments": {"image_id": img, "wait_seconds": 10}})
+    st = json.loads(rpc(client, "tools/call", {"name": "panel_state", "arguments": {"image_id": img}})["content"][0]["text"])
+    assert st["image"].startswith("data:image/jpeg;base64,") and len(st["segments"]) == 6
+    assert st["segments"][0]["mask"].startswith("data:image/png;base64,") and st["segments"][0]["thumb"]
+    assert st["versions"][0]["id"] == img

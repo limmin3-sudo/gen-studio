@@ -9,6 +9,7 @@ import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from mcp.server.apps import Apps
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image as MCPImage
 from PIL import Image
@@ -30,6 +31,8 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   overview picture plus the list. Then edit_image(image_id, segments=["3"] or ["white collared shirt"],
   prompt="red leather jacket") redraws just those parts; fill="auto" deletes them and lets the model fill in,
   fill="clear" deletes and blends with the surroundings. points=[{x,y}] selects whatever is at a pixel.
+- open_editor(image_id) shows a clickable segment editor inside the chat when the host supports MCP Apps
+  (ChatGPT, Claude; other hosts get the overview and a link). Prefer it when the user wants to pick parts by hand.
 - Characters: create_character(name, image ids or paths) once, then generate_image(character=name, ...) keeps
   the same face and outfit across scenes (tutorials, series).
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
@@ -50,8 +53,69 @@ Writing prompts (important for quality):
 - The user's request decides the content; pass it through faithfully."""
 
 
+PANEL_URI = "ui://gen-studio/panel.html"
+PANEL_HTML = (Path(__file__).with_name("panel.html")).read_text(encoding="utf-8")
+
+
+def _data_url(raw: bytes, mime: str) -> str:
+    return f"data:{mime};base64," + base64.b64encode(raw).decode()
+
+
 def build_mcp(state: "State") -> MCPServer:
-    mcp = MCPServer("gen-studio", title="Gen Studio", instructions=INSTRUCTIONS, version="0.1.0")
+    # ---- MCP Apps: an interactive segment editor shown inside the chat where the host supports it.
+    # Hosts without MCP Apps ignore the UI and get the same information as text, an overview image and a link.
+    apps = Apps()
+
+    @apps.tool(resource_uri=PANEL_URI, visibility=["model", "app"], description=(
+        "Open the interactive segment editor for an image (image_id or image_path) so the user can click parts, "
+        "delete them, and type edits. Where the chat cannot show the editor, returns the numbered overview and a "
+        "link to the full editor."))
+    async def open_editor(image_id: str | None = None, image_path: str | None = None):
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        if not state.library.get(image_id):
+            raise ValueError(f"이미지를 찾을 수 없어요: {image_id}")
+        segs = state.engine.segments.load(image_id)
+        info = {"image_id": image_id, "editor_url": _editor_url(image_id), "segments": _seg_list(image_id),
+                "note": "패널이 보이지 않으면 editor_url을 브라우저로 여세요." if segs else
+                        "아직 세그먼트가 없어요. 패널이 열리면 자동으로 찾고, 패널이 없으면 segment_image를 호출하세요."}
+        out: list = [info]
+        out.append(MCPImage(data=state.engine.segments.overview(image_id), format="jpeg") if segs else _preview(image_id))
+        return out
+
+    @apps.tool(resource_uri=PANEL_URI, visibility=["app"], description="Data for the editor panel (app only).")
+    async def panel_state(image_id: str, max_side: int = 1024):
+        rec = state.library.get(image_id)
+        if not rec:
+            raise ValueError(f"이미지를 찾을 수 없어요: {image_id}")
+        with Image.open(state.library.path(image_id)) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_side, max_side))
+            pw, ph = im.size
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=86)
+        segs = []
+        for s in state.engine.segments.load(image_id):
+            raw = state.engine.segments.alpha_mask(image_id, s["id"])
+            with Image.open(io.BytesIO(raw)) as m:
+                m = m.resize((pw, ph), Image.NEAREST)
+                mb = io.BytesIO()
+                m.save(mb, "PNG", optimize=True)
+            segs.append({**{k: s.get(k) for k in ("id", "label", "ko", "group", "instance", "area")},
+                         "mask": _data_url(mb.getvalue(), "image/png"),
+                         "thumb": _data_url(state.engine.segments.cutout(image_id, s["id"], 80), "image/png")})
+        return {"image_id": image_id, "width": rec["width"], "height": rec["height"], "label": rec.get("label"),
+                "prompt": rec.get("prompt"), "model_id": rec.get("model_id"),
+                "image": _data_url(buf.getvalue(), "image/jpeg"), "segments": segs,
+                "versions": [{"id": v["id"], "label": v.get("label")} for v in state.library.versions(image_id)],
+                "editor_url": _editor_url(image_id)}
+
+    apps.add_html_resource(PANEL_URI, PANEL_HTML, name="Gen Studio editor panel")
+
+    def _editor_url(image_id: str) -> str:
+        return f"{state.public_base()}/#edit={image_id}"
+
+    mcp = MCPServer("gen-studio", title="Gen Studio", instructions=INSTRUCTIONS, version="0.1.0", extensions=[apps])
 
     def _preview(image_id: str, max_side: int = 1024) -> MCPImage:
         path = state.library.path(image_id)

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gen Studio</title>
+<style>
+/* Compact segment editor shown inside a chat (MCP Apps). Talks to Gen Studio only through tools/call. */
+:root{--bg:#f6f5f2;--surface:#fff;--chip:#ebe9e5;--chip-h:#e1ded9;--fg:#1b1a19;--muted:#706c66;--line:#e2dfda;--accent:#4d78f5;--accent-soft:rgba(77,120,245,.14);--ink:#121212;--ink-fg:#fff;--danger:#d23f50;--ca:#fff;--cb:#e8e6e2;
+  font-family:system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif}
+:root[data-theme=dark]{--bg:#1b1b1a;--surface:#232322;--chip:#2a2a29;--chip-h:#343432;--fg:#ecebe7;--muted:#9b978f;--line:#2f2f2d;--accent:#7f9dff;--accent-soft:rgba(127,157,255,.18);--ink:#f1f0ec;--ink-fg:#121212;--danger:#ff6b7d;--ca:#2a2a29;--cb:#222221;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-size:14px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;padding:12px}
+@media (max-width:620px){.wrap{grid-template-columns:minmax(0,1fr)}}
+.stage{display:grid;gap:8px;min-width:0}
+.box{position:relative;border-radius:10px;overflow:hidden;background:repeating-conic-gradient(var(--cb) 0 25%,var(--ca) 0 50%) 0 0/18px 18px;cursor:pointer;justify-self:center;max-width:100%}
+.box img{display:block;max-width:100%;max-height:520px}
+.ov{position:absolute;inset:0;background:var(--accent);opacity:.32;-webkit-mask-size:100% 100%;mask-size:100% 100%;pointer-events:none}
+.ov.sel{opacity:.55}
+.busy{position:absolute;inset:0;display:grid;place-items:center;background:color-mix(in srgb,var(--bg) 60%,transparent);font-size:13px}
+.vers{display:flex;gap:6px;flex-wrap:wrap}
+.vers button{height:26px;padding:0 10px;border-radius:13px;background:var(--chip);font-size:12px}
+.vers button.cur{background:var(--ink);color:var(--ink-fg)}
+.side{display:grid;align-content:start;gap:6px;min-width:0}
+.side h3{margin:2px 0 4px;font-size:13px;font-weight:500;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+.row{display:flex;align-items:center;gap:10px;width:100%;padding:5px 8px;border-radius:10px;text-align:left;position:relative}
+.row:hover,.row.hl{background:var(--chip)}
+.row.on{background:var(--accent-soft)}
+.th{width:38px;height:38px;border-radius:8px;flex:none;background:repeating-conic-gradient(var(--cb) 0 25%,var(--ca) 0 50%) 0 0/8px 8px;display:grid;place-items:center;overflow:hidden}
+.th img{max-width:34px;max-height:34px}
+.lb{flex:1;min-width:0;display:grid}.lb b{font-weight:500}.lb small{color:var(--muted);font-size:11.5px}
+.del{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;color:var(--muted)}
+.del:hover{color:var(--danger);background:var(--surface)}
+.bar{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:5px 5px 5px 14px}
+.bar input{flex:1;min-width:0;border:0;background:transparent;color:var(--fg);font:inherit;font-size:14.5px;height:34px}
+.bar input:focus{outline:none}
+.go{width:34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;font-size:16px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px}
+.chip{height:26px;padding:0 10px;border-radius:13px;background:var(--chip);font-size:12.5px;display:inline-flex;align-items:center;gap:4px}
+.chip.sel{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.chip.main{background:var(--ink);color:var(--ink-fg)}
+.hint{font-size:12px;color:var(--muted)}
+.link{font-size:12px;color:var(--muted);text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <div class="vers" id="vers"></div>
+    <div class="box" id="box"><img id="img" alt=""><div id="ovs"></div></div>
+    <div class="chips" id="chips"></div>
+    <div class="bar"><input id="prompt" autocomplete="off" placeholder="바꿀 부분을 고르고 무엇으로 바꿀지 입력하세요"><button type="button" class="go" id="go" aria-label="실행">↑</button></div>
+  </div>
+  <div class="side">
+    <h3>세그먼트 <button class="link" id="open">편집기에서 크게 열기</button></h3>
+    <div id="list"><span class="hint">불러오는 중…</span></div>
+  </div>
+</div>
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let nextId = 1; const waiting = new Map();
+let S = null, sel = [], hover = null, asking = false, busy = false, hits = {};
+
+/* ---- MCP Apps bridge: JSON-RPC 2.0 over postMessage with the host ---- */
+function send(msg) { window.parent.postMessage({jsonrpc: '2.0', ...msg}, '*'); }
+function request(method, params) {
+  const id = nextId++;
+  return new Promise((resolve, reject) => { waiting.set(id, {resolve, reject}); send({id, method, params}); });
+}
+function notify(method, params) { send({method, params}); }
+window.addEventListener('message', e => {
+  const m = e.data; if (!m || m.jsonrpc !== '2.0') return;
+  if (m.id !== undefined && waiting.has(m.id) && (m.result !== undefined || m.error)) {
+    const w = waiting.get(m.id); waiting.delete(m.id);
+    m.error ? w.reject(new Error(m.error.message || '오류')) : w.resolve(m.result); return;
+  }
+  if (m.method === 'ui/notifications/tool-result') fromResult(m.params);
+  if (m.method === 'ui/notifications/tool-input' && m.params?.arguments?.image_id && !S) load(m.params.arguments.image_id);
+  if (m.method === 'ui/notifications/host-context-changed') theme(m.params);
+  if (m.method === 'ui/resource-teardown' && m.id !== undefined) send({id: m.id, result: {}});
+});
+const theme = ctx => { if (ctx?.theme) document.documentElement.dataset.theme = ctx.theme; };
+const textOf = r => (r?.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+async function call(name, args) {
+  const r = await request('tools/call', {name, arguments: args});
+  if (r?.isError) throw new Error(textOf(r) || '실패');
+  const t = textOf(r); try { return JSON.parse(t); } catch { return t; }
+}
+function fromResult(res) { try { const j = JSON.parse(textOf(res)); if (j.image_id) load(j.image_id); } catch {} }
+function size() { notify('ui/notifications/size-changed', {height: Math.ceil(document.documentElement.scrollHeight)}); }
+new ResizeObserver(size).observe(document.body);
+
+/* ---- state ---- */
+async function load(id) {
+  setBusy('불러오는 중…');
+  try {
+    S = await call('panel_state', {image_id: id});
+    if (!S.segments.length) { setBusy('부분을 찾는 중…'); await call('segment_image', {image_id: id, wait_seconds: 120}); S = await call('panel_state', {image_id: id}); }
+  } catch (e) { $('#list').innerHTML = `<span class="hint">${esc(e.message)}</span>`; }
+  sel = []; asking = false; setBusy(null); render();
+}
+function setBusy(t) { busy = !!t; let b = $('#box .busy'); if (!t) { b?.remove(); return; } if (!b) { b = document.createElement('div'); b.className = 'busy'; $('#box').appendChild(b); } b.textContent = t; }
+const rows = () => { const out = [], seen = new Set(); for (const s of S.segments) { if (s.group) { if (seen.has(s.group)) continue; seen.add(s.group); out.push({key: s.group, s, n: S.segments.filter(x => x.group === s.group).length}); } else out.push({key: s.id, s, n: 1}); } return out; };
+const idsOf = k => S.segments.filter(s => s.id === k || s.group === k).map(s => s.id);
+function render() {
+  if (!S) return;
+  $('#img').src = S.image;
+  $('#vers').innerHTML = S.versions.map((v, i) => `<button class="${v.id === S.image_id ? 'cur' : ''}" data-v="${v.id}" title="${esc(v.label || '')}">${i + 1}${v.label && v.label !== '원본' && v.label !== '불러온 원본' ? ' · ' + esc(v.label.slice(0, 14)) : ''}</button>`).join('');
+  $('#list').innerHTML = rows().map(r => `<div style="display:flex;align-items:center"><button class="row ${sel.includes(r.key) ? 'on' : ''}" data-k="${esc(r.key)}"><span class="th"><img src="${r.s.thumb}" alt=""></span><span class="lb"><b>${esc(r.s.ko || r.s.label)}${r.n > 1 ? ` (${r.n})` : ''}</b>${r.s.ko ? `<small>${esc(r.s.label)}</small>` : ''}</span></button><button class="del" data-del="${esc(r.key)}" title="삭제">🗑</button></div>`).join('') || '<span class="hint">찾은 부분이 없어요. 그림을 클릭해 보세요.</span>';
+  overlays(); chips(); prepHits();
+}
+function overlays() {
+  const ov = (id, c) => { const s = S.segments.find(x => x.id === id); return s ? `<div class="ov ${c}" style="-webkit-mask-image:url(${s.mask});mask-image:url(${s.mask})"></div>` : ''; };
+  let h = ''; for (const k of sel) for (const id of idsOf(k)) h += ov(id, 'sel');
+  if (hover && !sel.includes(hover)) for (const id of idsOf(hover)) h += ov(id, '');
+  $('#ovs').innerHTML = h;
+}
+const names = () => sel.map(k => { const r = rows().find(x => x.key === k); return r ? (r.s.ko || r.s.label) : k; }).join(', ');
+function chips() {
+  let h = '';
+  if (asking) h = `<span class="chip sel">${esc(names())} 삭제 · 어떻게 채울까요?</span><button class="chip main" data-fill="auto">모델이 알아서</button><button class="chip" data-fill="clear">비워두기</button><button class="chip" data-cancel>취소</button><span class="hint">또는 그릴 내용을 입력</span>`;
+  else if (sel.length) h = `<span class="chip sel">@${esc(names())}</span><span class="hint">무엇으로 바꿀지 입력하거나 🗑으로 삭제</span>`;
+  else h = `<span class="hint">목록이나 그림에서 부분을 고르세요. 고르지 않고 입력하면 문장대로 전체를 편집해요.</span>`;
+  $('#chips').innerHTML = h;
+}
+function prepHits() {
+  hits = {};
+  for (const s of S.segments) { const im = new Image(); im.onload = () => { const c = document.createElement('canvas'); c.width = 128; c.height = Math.round(128 * im.height / im.width); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); hits[s.id] = c; }; im.src = s.mask; }
+}
+function at(fx, fy) { let best = null; for (const s of S.segments) { const c = hits[s.id]; if (!c) continue; const a = c.getContext('2d').getImageData(Math.min(c.width - 1, fx * c.width | 0), Math.min(c.height - 1, fy * c.height | 0), 1, 1).data[3]; if (a > 127 && (!best || s.area < best.area)) best = s; } return best; }
+function pick(key, add) { sel = add ? (sel.includes(key) ? sel.filter(k => k !== key) : [...sel, key]) : (sel.length === 1 && sel[0] === key ? [] : [key]); asking = false; render(); }
+
+/* ---- actions ---- */
+async function run(args, msg) {
+  if (busy) return;
+  setBusy(msg);
+  try {
+    const r = await call('edit_image', {image_id: S.image_id, wait_seconds: 240, include_image: false, ...args});
+    const id = r.images?.[0]?.image_id;
+    if (r.status !== 'done' || !id) throw new Error(r.error || '아직 끝나지 않았어요. 잠시 후 다시 열어 주세요.');
+    $('#prompt').value = '';
+    await load(id);
+  } catch (e) { setBusy(null); $('#chips').innerHTML = `<span class="hint" style="color:var(--danger)">${esc(e.message)}</span>`; }
+}
+$('#list').addEventListener('click', e => {
+  const d = e.target.closest('[data-del]'); if (d) { sel = [d.dataset.del]; asking = true; render(); $('#prompt').focus(); return; }
+  const r = e.target.closest('[data-k]'); if (r) pick(r.dataset.k, e.shiftKey || e.ctrlKey || e.metaKey);
+});
+$('#list').addEventListener('pointerover', e => { const r = e.target.closest('[data-k]'); hover = r ? r.dataset.k : null; overlays(); });
+$('#vers').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b && !busy) load(b.dataset.v); });
+$('#chips').addEventListener('click', e => {
+  const f = e.target.closest('[data-fill]'); if (f) run({segments: sel.flatMap(idsOf), fill: f.dataset.fill}, f.dataset.fill === 'auto' ? '모델이 알아서 채우는 중…' : '지우는 중…');
+  if (e.target.closest('[data-cancel]')) { asking = false; chips(); }
+});
+$('#box').addEventListener('click', async e => {
+  if (!S || busy) return;
+  const r = $('#img').getBoundingClientRect(), fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  const s = at(fx, fy);
+  if (s) { pick(s.group || s.id, e.shiftKey || e.ctrlKey || e.metaKey); return; }
+  setBusy('그 자리를 잡는 중…');
+  try { await call('segment_image', {image_id: S.image_id, points: [{x: Math.round(fx * S.width), y: Math.round(fy * S.height)}], wait_seconds: 60}); const id = S.image_id; S = await call('panel_state', {image_id: id}); sel = [S.segments[S.segments.length - 1].id]; }
+  catch (err) { $('#chips').innerHTML = `<span class="hint">${esc(err.message)}</span>`; }
+  setBusy(null); render();
+});
+$('#box').addEventListener('pointermove', e => { if (!S) return; const r = $('#img').getBoundingClientRect(); const s = at((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height); const k = s ? (s.group || s.id) : null; if (k !== hover) { hover = k; overlays(); } });
+$('#box').addEventListener('pointerleave', () => { hover = null; overlays(); });
+// no <form>: sandboxed chat iframes may block form submission
+function submit() {
+  const t = $('#prompt').value.trim(); if (!S || busy) return;
+  if (asking) { if (t) run({segments: sel.flatMap(idsOf), fill: 'prompt', prompt: t}, '그리는 중…'); return; }
+  if (sel.length) { if (t) run({segments: sel.flatMap(idsOf), prompt: t}, '그 부분을 다시 그리는 중…'); return; }
+  if (t) run({prompt: t}, '문장대로 편집하는 중…');
+}
+$('#go').addEventListener('click', submit);
+$('#prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submit(); } });
+$('#open').onclick = () => S && request('ui/open-link', {url: S.editor_url}).catch(() => {});
+
+request('ui/initialize', {appInfo: {name: 'gen-studio-panel', version: '0.1.0'}, appCapabilities: {}, protocolVersion: '2026-01-26'})
+  .then(r => { theme(r?.hostContext); notify('ui/notifications/initialized', {}); size(); })
+  .catch(() => {});
+})();
+</script>
+</body>
+</html>
