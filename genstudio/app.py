@@ -40,6 +40,8 @@ class State:
 
 def create_app(settings: Settings | None = None, *, comfy_transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     settings = settings or load_settings()
+    from .diagnostics import install as _keep_logs
+    _keep_logs()
     registry = Registry.load()
     library = Library(settings.output_dir)
     comfy = ComfyClient(settings.comfy_url, transport=comfy_transport)
@@ -93,6 +95,17 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
             "running": {"id": run.id, "kind": run.kind, "action": run.decision.get("action") or "생성",
                         "message": run.message, "progress": run.progress} if run else None}
         return snap
+
+    @app.get("/api/diagnostics")
+    async def diagnostics():
+        """Plain-text report for pasting into a chat when something goes wrong (secrets masked)."""
+        from fastapi.responses import PlainTextResponse
+        from . import config as cfg
+        from .diagnostics import build
+        secrets = [str(v) for v in cfg.read_secrets().values() if isinstance(v, str)]
+        import os
+        secrets += [os.environ[k] for k in ("GENSTUDIO_TOKEN", "CIVITAI_API_KEY") if os.environ.get(k)]
+        return PlainTextResponse(await build(app.state.gs, secrets))
 
     @app.get("/api/models")
     async def models():

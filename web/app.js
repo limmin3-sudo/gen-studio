@@ -48,6 +48,20 @@ async function refreshStatus() {
   fillModelSelect();
   renderBanner();
 }
+/* click the status bar: copy a diagnostic report to paste into a chat */
+async function copyDiagnostics() {
+  let text;
+  try { text = await (await fetch('/api/diagnostics', {credentials: 'same-origin'})).text(); }
+  catch (e) { toast('진단 정보를 가져오지 못했어요: ' + e.message, 5000); return; }
+  try { await navigator.clipboard.writeText(text); toast('진단 정보를 복사했어요. 대화창에 붙여넣어 주세요.', 5000); return; } catch {}
+  const d = document.createElement('dialog'); d.className = 'diag';
+  d.innerHTML = `<p>아래 내용을 전부 복사해서 붙여넣어 주세요.</p><textarea readonly></textarea><div class="row"><button class="btn primary">닫기</button></div>`;
+  d.querySelector('textarea').value = text;
+  d.querySelector('button').onclick = () => d.remove();
+  document.body.appendChild(d); d.showModal(); d.querySelector('textarea').select();
+}
+$('#status').addEventListener('click', copyDiagnostics);
+
 /* live machine numbers in the top bar (GPU, VRAM, RAM, CPU, running job) */
 let SYS = null;
 async function pollSystem() {
@@ -70,7 +84,7 @@ function renderSys() {
   if (SYS.ram_total) parts.push(meter('RAM', SYS.ram_used / SYS.ram_total * 100, `${Math.round(SYS.ram_used)}/${Math.round(SYS.ram_total)}GB`, 'opt'));
   if (SYS.cpu != null) parts.push(meter('CPU', SYS.cpu, `${Math.round(SYS.cpu)}%`, 'opt'));
   if (g.temp != null) parts.push(`<span class="m opt ${g.temp >= 83 ? 'hot' : ''}"><b>온도</b><em>${Math.round(g.temp)}°</em></span>`);
-  el.title = g.name || '';
+  el.title = `${g.name ? g.name + ' · ' : ''}눌러서 진단 정보 복사`;
   el.innerHTML = `<i class="dot ok"></i>${parts.join('') || `<span>${esc(g.name || '연결됨')}</span>`}`;
 }
 
@@ -829,7 +843,7 @@ const Editor = (() => {
       if (done.status === 'done') {
         pending = false; promptEl.value = ''; autoGrow(promptEl); clearMask(false); segSel = [];
         location.hash = 'edit=' + done.result_ids[0];
-      } else if (done.status === 'error') toast('실패: ' + done.error, 7000);
+      } else if (done.status === 'error') toast('실패: ' + done.error + ' — 오른쪽 위 상태 표시를 누르면 진단 정보가 복사돼요', 9000);
       else toast('취소했어요');
       return done;
     } finally { ov.remove(); busy = null; }

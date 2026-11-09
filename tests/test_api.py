@@ -330,3 +330,18 @@ def test_enhance_prompt(client, fake):
     assert "Danbooru" in gen["prompt"] and "반실사 카페 여자" in gen["prompt"] and "--no" not in gen["prompt"]
     r = client.post("/api/enhance", json={"prompt": "카페 여자"}).json()
     assert r["family"] == "zimage" and r["prompt"] == "A woman sitting by a window in soft natural light."
+
+
+def test_diagnostics_report(settings, monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    from fake_comfy import FakeComfy
+    from genstudio.app import create_app
+    from genstudio import config as cfg
+    monkeypatch.setattr("genstudio.config.SECRETS_FILE", tmp_path / "secrets.json")
+    cfg.write_secret("civitai_api_key", "civ-SECRET-123456")
+    app = create_app(settings, comfy_transport=FakeComfy(fail_with="CUDA out of memory").transport())
+    with TestClient(app) as c:
+        wait_job(c, c.post("/api/generate", json={"prompt": "a ship civ-SECRET-123456"}).json()["id"])
+        t = c.get("/api/diagnostics").text
+    assert "## ComfyUI" in t and "연결됨" in t and "최근 실패한 작업" in t and "out of memory" in t
+    assert "도구: sam3" in t and "civ-SECRET-123456" not in t and "***" in t

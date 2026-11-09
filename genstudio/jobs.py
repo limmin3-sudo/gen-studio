@@ -14,6 +14,8 @@ from typing import Literal
 from PIL import Image
 from pydantic import BaseModel, Field
 
+import logging
+
 from . import router, workflows
 from .comfy import ComfyClient, ComfyError, iter_images, output_text
 from .segments import DESCRIBE_PROMPT, FALLBACK_LABELS, SegmentStore, parse_labels
@@ -147,6 +149,8 @@ class SegmentRequest(BaseModel):
 
 
 import re as _re
+
+log = logging.getLogger("genstudio.jobs")
 
 # "반실사로 만들어줘", "실사화", "그림체 바꿔": the reference is the picture itself, drawn again in another look
 RESTYLE_RX = _re.compile(r"(반\s*실사|실사|사진|semi[\s-]?real\w*|photo\w*|realistic)\s*(으로|로|화|느낌|버전|스타일|풍)"
@@ -940,8 +944,10 @@ class Engine:
                 job.status, job.progress, job.message = "done", 1.0, "완료"
             except ComfyError as e:
                 job.status, job.error, job.message = "error", str(e), "실패"
+                log.warning("작업 실패 %s (%s): %s", job.id, job.kind, e)
             except Exception as e:  # keep the worker alive no matter what
                 job.status, job.error, job.message = "error", f"{type(e).__name__}: {e}", "실패"
+                log.exception("작업 오류 %s (%s)", job.id, job.kind)
             finally:
                 self._running = None
                 self._finish(job)

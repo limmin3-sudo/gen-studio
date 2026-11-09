@@ -359,6 +359,14 @@ def build_mcp(state: "State") -> MCPServer:
                                     **({"views": views} if views else {}))
         return await _finish(state.engine.submit_character_build(req), wait_seconds, include_image)
 
+    @mcp.tool(description=(
+        "Diagnostic report (versions, GPU/RAM, missing models or ComfyUI nodes, recent failed jobs with errors, end "
+        "of the ComfyUI log). Call it when a job fails or something seems broken, before guessing."))
+    async def get_diagnostics():
+        from . import config as cfg
+        from .diagnostics import build
+        return await build(state, [str(v) for v in cfg.read_secrets().values() if isinstance(v, str)])
+
     @mcp.tool(description="List saved characters.")
     async def list_characters():
         return {"characters": [{"name": c["name"], "id": c["id"], "aliases": c.get("aliases", []),
