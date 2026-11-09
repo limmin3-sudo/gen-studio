@@ -44,16 +44,36 @@ async function refreshStatus() {
   try {
     [STATUS, MODELS] = await Promise.all([api.get('/api/status'), api.get('/api/models')]);
   } catch { STATUS = null; }
-  const el = $('#status');
-  if (!STATUS) { el.innerHTML = '<i class="dot bad"></i><span>Gen Studio 서버 응답 없음</span>'; return; }
-  const c = STATUS.comfyui;
-  const q = STATUS.queue.waiting + (STATUS.queue.running ? 1 : 0);
-  el.innerHTML = c.connected
-    ? `<i class="dot ok"></i><span>${esc((c.devices[0] || 'GPU').replace(/^cuda:\d+\s*/, '').split(':')[0])}${q ? ` · 작업 ${q}개` : ''}</span>`
-    : '<i class="dot bad"></i><span>ComfyUI 꺼짐</span>';
+  if (!STATUS) { renderSys(); return; }
   fillModelSelect();
   renderBanner();
 }
+/* live machine numbers in the top bar (GPU, VRAM, RAM, CPU, running job) */
+let SYS = null;
+async function pollSystem() {
+  if (document.hidden) return;
+  try { SYS = await api.get('/api/system'); } catch { SYS = null; }
+  renderSys();
+}
+function meter(label, pct, text, cls = '') {
+  return `<span class="m ${cls} ${pct >= 90 ? 'hot' : ''}"><b>${label}</b><i style="--p:${Math.max(0, Math.min(100, pct))}%"></i><em>${text}</em></span>`;
+}
+function renderSys() {
+  const el = $('#status');
+  if (!SYS) { el.innerHTML = '<i class="dot bad"></i><span>Gen Studio 서버 응답 없음</span>'; return; }
+  if (!SYS.comfyui) { el.innerHTML = '<i class="dot bad"></i><span>ComfyUI 꺼짐</span>'; return; }
+  const g = SYS.gpu || {}, run = SYS.queue.running, parts = [];
+  if (run || SYS.queue.waiting)
+    parts.push(`<span class="job">${run ? `<span class="ja">${esc(run.action)} </span>${Math.round(run.progress * 100)}%` : ''}<span class="ja">${run && SYS.queue.waiting ? ' · ' : ''}${SYS.queue.waiting ? `대기 ${SYS.queue.waiting}` : ''}</span>${!run && SYS.queue.waiting ? `<span class="jm">대기 ${SYS.queue.waiting}</span>` : ''}</span>`);
+  if (g.util != null) parts.push(meter('GPU', g.util, `${Math.round(g.util)}%`, 'opt2'));
+  if (g.vram_total) parts.push(meter('VRAM', g.vram_used / g.vram_total * 100, `${g.vram_used.toFixed(1)}/${Math.round(g.vram_total)}G<span class="ja">B</span>`));
+  if (SYS.ram_total) parts.push(meter('RAM', SYS.ram_used / SYS.ram_total * 100, `${Math.round(SYS.ram_used)}/${Math.round(SYS.ram_total)}GB`, 'opt'));
+  if (SYS.cpu != null) parts.push(meter('CPU', SYS.cpu, `${Math.round(SYS.cpu)}%`, 'opt'));
+  if (g.temp != null) parts.push(`<span class="m opt ${g.temp >= 83 ? 'hot' : ''}"><b>온도</b><em>${Math.round(g.temp)}°</em></span>`);
+  el.title = g.name || '';
+  el.innerHTML = `<i class="dot ok"></i>${parts.join('') || `<span>${esc(g.name || '연결됨')}</span>`}`;
+}
+
 function renderBanner() {
   let b = document.querySelector('.banner');
   const msgs = [];
@@ -852,4 +872,7 @@ const Editor = (() => {
 
 refreshStatus().then(route);
 setInterval(refreshStatus, 5000);
+pollSystem();
+setInterval(pollSystem, 2000);
+document.addEventListener('visibilitychange', pollSystem);
 })();

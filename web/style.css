@@ -35,7 +35,20 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .tabs a:hover{background:var(--chip)}
 .tabs a[aria-current="page"]{background:var(--ink);color:var(--ink-fg)}
 .spacer{flex:1}
-.status{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);white-space:nowrap}
+.status{display:inline-flex;align-items:center;gap:12px;font-size:13px;color:var(--muted);white-space:nowrap;min-width:0;overflow:hidden}
+.status .m{display:inline-flex;align-items:center;gap:5px}
+.status .m b{font-weight:500;font-size:11.5px;letter-spacing:.02em}
+.status .m i{position:relative;width:32px;height:4px;border-radius:2px;background:var(--chip);overflow:hidden}
+.status .m i::after{content:"";position:absolute;inset:0 auto 0 0;width:var(--p);background:var(--accent);transition:width .4s}
+.status .m.hot i::after{background:var(--danger)}
+.status .m.hot em{color:var(--danger)}
+.status .m em{font-style:normal;font-size:12px;color:var(--fg);font-variant-numeric:tabular-nums}
+.status .job{padding:3px 9px;border-radius:9px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:500}
+@media (max-width:900px){.status .opt{display:none}}
+.tabs{flex-shrink:0}
+.tabs a{white-space:nowrap}
+.status .jm{display:none}
+@media (max-width:560px){.status{gap:8px}.status .opt2,.status .m i,.status .m b,.status .ja{display:none}.status .jm{display:inline}}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .dot.ok{background:var(--ok)} .dot.bad{background:var(--danger)}
 .banner{display:flex;gap:10px;align-items:flex-start;margin:12px max(16px,env(safe-area-inset-left,0px)) 0;padding:12px 14px;border-radius:12px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);font-size:13.5px;line-height:1.55}

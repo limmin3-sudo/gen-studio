@@ -80,6 +80,20 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
             "queue": {"running": engine._running, "waiting": sum(1 for j in engine.jobs.values() if j.status == "queued")},
         }
 
+    @app.get("/api/system")
+    async def system():
+        """GPU/VRAM/RAM/CPU and the job queue, for the status bar (polled every couple of seconds)."""
+        from . import sysinfo
+        stats = await comfy.ping()
+        snap = await sysinfo.snapshot(stats)
+        run = engine.jobs.get(engine._running) if engine._running else None
+        snap["comfyui"] = stats is not None
+        snap["queue"] = {
+            "waiting": sum(1 for j in engine.jobs.values() if j.status == "queued"),
+            "running": {"id": run.id, "kind": run.kind, "action": run.decision.get("action") or "생성",
+                        "message": run.message, "progress": run.progress} if run else None}
+        return snap
+
     @app.get("/api/models")
     async def models():
         return registry.status(settings.models_dir)

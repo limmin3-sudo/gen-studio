@@ -260,3 +260,9 @@ def test_build_character_from_one_photo(client, fake):
     # and the new character drives generation through Qwen with all four pictures
     g = client.post("/api/generate", json={"prompt": "사무실에서 웃는 사진", "character": "디렉터"}).json()
     assert g["decision"]["ref_ids"] == c["ref_ids"]
+
+
+def test_system_info(client):
+    s = client.get("/api/system").json()
+    assert s["comfyui"] is True and s["queue"] == {"waiting": 0, "running": None}
+    assert s["ram_total"] > 0 and "cpu" in s
