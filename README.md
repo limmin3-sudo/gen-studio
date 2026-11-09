@@ -51,14 +51,13 @@
 
 | 용도 | 모델 | 기반 |
 |---|---|---|
-| 실사 (기본) | CyberRealistic Z-Image Turbo v10 | Z-Image Turbo |
-| 반실사 (기본) | Realism Illustrious v5.5 (Stable Yogi) | Illustrious (SDXL) |
-| 글자·디자인 | Qwen-Image 2.1 Turbo | Qwen-Image 2.1 (7B) |
-| 극실사 | Wan 2.2 14B (LightX2V 4단계) | Wan 2.2 (영상 모델의 1프레임) |
+| 실사 (기본) · 글자 · 참고 이미지 · 문장 편집 | RedCraft QW21 v3 (무검열) | Qwen-Image 2.1 Turbo (7B) |
+| 실사 도우미 (디테일 보정, 업스케일, 포즈, LoRA 학습) | PornMaster Z-Image Turbo V3.5 | Z-Image Turbo |
+| 반실사 (기본) | Illustrij v21 | Illustrious (SDXL) |
+| 영상 | DaSiWa WAN 2.2 I2V 14B Lightspeed | Wan 2.2 I2V (4스텝 가속 내장) |
 
-"포스터", "간판", "로고"처럼 글자가 들어가는 요청이나 "따옴표로 감싼 문구"가 있으면 Qwen-Image 2.1을 고릅니다.
-Qwen은 학습 단계에서 노출 표현이 약하므로, 인물 위주 이미지는 실사·반실사 모델이 맡습니다.
-"극실사", "초실사", "hyperrealistic" 같은 말이 있으면 Wan 2.2를 고릅니다. Wan 2.2 파일은 4단계 영상 기능에서도 그대로 씁니다.
+- Qwen-Image 2.1(과 그 튜닝 모델)은 비상업 연구용 라이선스로 알려져 있어요. 개인 작업에만 쓰세요.
+- 기존 모델(CyberRealistic Z-Image, Realism Illustrious, 공식 Qwen·Wan)은 목록에서 빠졌지만 파일은 지우지 않아요. 설정 탭에서 정리할 수 있어요.
 
 모델은 `config/models.yaml` 에 적혀 있습니다. 항목을 추가하고 `update.bat` 을 실행하면 새 모델을 받습니다.
 편집할 때는 원본을 만든 모델로 다시 그려서 그림체를 유지합니다. 외부에서 불러온 이미지는 기본 실사 모델로 편집합니다.

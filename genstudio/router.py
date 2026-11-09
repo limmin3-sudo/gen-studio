@@ -164,16 +164,16 @@ def _keyword_model(registry: Registry, prompt: str, models_dir: Path | None):
 
 
 def pick_model(registry: Registry, style: str, models_dir: Path | None, reasons: list[str]) -> ModelSpec:
-    candidates = [m for m in registry.models if m.style == style] or list(registry.models)
-    # prefer installed models, then the main one
+    candidates = [m for m in registry.models if m.covers(style)] or list(registry.models)
+    # prefer installed models, then the main one; helpers only when nothing else fits
     def score(m: ModelSpec):
         inst = m.installed(models_dir)
-        return (0 if inst in (True, None) else 1, 0 if m.role == "main" else 1)
+        return (0 if inst in (True, None) else 1, {"main": 0, "alt": 1}.get(m.role, 2))
     candidates.sort(key=score)
     best = candidates[0]
     if best.installed(models_dir) is False:
         reasons.append("설치된 모델이 없어 기본 모델로 시도")
-    elif best.role != "main":
+    elif best.role != "main" and not any(m.role == "main" and m.covers(style) for m in candidates):
         reasons.append("메인 모델이 없어 보조 모델 사용")
     return best
 

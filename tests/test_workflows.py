@@ -4,7 +4,7 @@ import struct
 from genstudio import workflows
 from genstudio.registry import Registry, is_full_checkpoint
 
-REG = Registry.load()
+REG = Registry.load(__import__("pathlib").Path(__file__).parent / "fixtures" / "models.yaml")
 ZIT = REG.get("cyberrealistic-zit")
 ILL = REG.get("realism-illustrious")
 

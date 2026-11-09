@@ -138,6 +138,19 @@ VIDEO_AREA = {"480p": 832 * 480, "720p": 1280 * 720}
 VIDEO_FPS = 16
 
 
+def video_files(specs) -> list[str]:
+    """[high, low, text encoder, vae, (lora high, lora low)] from the tool's file list, whatever its order."""
+    def pick(cond):
+        return next((f.name for f in specs if cond(f)), None)
+    unets = [f for f in specs if f.dir == "diffusion_models"]
+    high = next((f.name for f in unets if "high" in f.name.lower()), unets[0].name if unets else None)
+    low = next((f.name for f in unets if "low" in f.name.lower()), unets[-1].name if unets else None)
+    out = [high, low, pick(lambda f: f.dir == "text_encoders"), pick(lambda f: f.dir == "vae")]
+    lh = pick(lambda f: f.dir == "loras" and "high" in f.name.lower())
+    ll = pick(lambda f: f.dir == "loras" and "low" in f.name.lower())
+    return out + [lh, ll] if lh and ll else out
+
+
 def video_size(w: int, h: int, quality: str) -> tuple[int, int]:
     k = (VIDEO_AREA[quality] / (w * h)) ** 0.5
     return max(256, round(w * k / 16) * 16), max(256, round(h * k / 16) * 16)
@@ -513,12 +526,18 @@ class Engine:
         if not is_map and not self.registry.tool_ready("pose_detect", self.settings.models_dir):
             raise ValueError("포즈 인식 모델(SDPose)이 없어요. update.bat을 실행해 받아 주세요.")
         fam = decision["family"]
-        if fam == "wan22":                     # Wan cannot follow a pose: use the realistic main model
-            if req.model and req.model != "auto":
-                raise ValueError("Wan 2.2는 포즈를 따라 그리지 못해요. 다른 모델을 고르세요.")
-            m = router.pick_model(self.registry, "realistic", self.settings.models_dir, [])
-            decision.update(model_id=m.id, model_name=m.name, family=m.family.id)
-            fam = m.family.id
+        auto = not req.model or req.model == "auto"
+        if fam == "wan22" and not auto:
+            raise ValueError("Wan 2.2는 포즈를 따라 그리지 못해요. 다른 모델을 고르세요.")
+        if fam == "wan22" or (fam == "qwen21" and auto and not (req.references or req.character)):
+            # a ControlNet follows the skeleton exactly; Qwen only sees it as a picture (kept for reference work)
+            m = self.helper_model("semi" if decision.get("style") == "semi" else "realistic")
+            if m is not None and self.registry.tool_ready(
+                    "control_zimage" if m.family.id == "zimage" else "control_sdxl_pose", self.settings.models_dir):
+                decision.update(model_id=m.id, model_name=m.name, family=m.family.id)
+                fam = m.family.id
+            elif fam == "wan22":
+                raise ValueError("포즈를 따라 그릴 모델이 없어요")
         kind = {"zimage": "zimage", "illustrious": "sdxl", "qwen21": "qwen"}.get(fam)
         tool = {"zimage": "control_zimage", "sdxl": "control_sdxl_pose"}.get(kind)
         if tool and not self.registry.tool_ready(tool, self.settings.models_dir):
@@ -769,7 +788,7 @@ class Engine:
         await self._switch_family("wan22_i2v")
         job.message = "영상 만드는 중 (몇 분 걸려요)"
         seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
-        files = [f.name for f in self.registry.tools["video_i2v"]]
+        files = video_files(self.registry.tools["video_i2v"])
         graph = workflows.image_to_video(name, files, text, "", d["width"], d["height"], d["frames"], seed, VIDEO_FPS)
         outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=3 * 3600)
         item = next((o for o in outs if str(o.get("filename", "")).lower().endswith((".mp4", ".webm", ".mov"))), outs[0])
@@ -797,10 +816,7 @@ class Engine:
         big = mp > 1.5                          # already upscaled: keep its size, just Real-ESRGAN on top
         if req.refine is not False and not big:
             style = "semi" if src.get("style") == "semi" or src.get("family") == "illustrious" else "realistic"
-            cand = router.pick_model(self.registry, style, self.settings.models_dir, [])
-            if cand.installed(self.settings.models_dir) is not False and not cand.family.high_noise \
-                    and cand.family.encoder != "qwen21":
-                m = cand
+            m = self.helper_model(style)
         w, h = src["width"], src["height"]
         k = (1.0 if big else (1_000_000 / (w * h)) ** 0.5) * req.scale
         decision = {"action": f"업스케일 {req.scale}배", "model_name": f"Real-ESRGAN{' + ' + m.name if m else ''}",
@@ -838,6 +854,18 @@ class Engine:
         job.result_ids.append(rec["id"])
 
     # ------------------------------------------------------------ detail pass
+    def helper_model(self, style: str):
+        """A model that can redraw parts with a regular sampler (Z-Image / Illustrious), for detail passes, upscale
+        refinement, pose ControlNet and training when the main model is Qwen. None when none is installed."""
+        md = self.settings.models_dir
+        cands = [m for m in self.registry.models if m.covers(style) and m.family.encoder != "qwen21"
+                 and not m.family.high_noise and m.installed(md) is not False]
+        if not cands:
+            cands = [m for m in self.registry.models if m.family.encoder != "qwen21" and not m.family.high_noise
+                     and m.installed(md) is not False and (style != "semi") == (m.family.id == "zimage")]
+        cands.sort(key=lambda m: {"helper": 0, "main": 1}.get(m.role, 2))
+        return cands[0] if cands else None
+
     def _detail_model(self, src: dict, requested: str):
         if requested and requested != "auto":
             m = self.registry.get(requested)
@@ -846,9 +874,11 @@ class Engine:
             return m
         m, _why = router.model_for_edit(self.registry, src.get("model_id"), self.settings.models_dir,
                                         self.settings.default_style)
-        if m.family.encoder == "qwen21" or m.family.high_noise:   # Qwen / Wan pictures: redraw with the style model
+        if m.family.encoder == "qwen21" or m.family.high_noise:   # Qwen / Wan pictures: redraw with a helper model
             style = "semi" if src.get("style") == "semi" else "realistic"
-            m = router.pick_model(self.registry, style, self.settings.models_dir, [])
+            m = self.helper_model(style)
+            if m is None:
+                raise ValueError("디테일 보정에 쓸 Z-Image·Illustrious 모델이 없어요. 설정에서 모델을 받아 주세요.")
         return m
 
     def submit_detail(self, req) -> Job:

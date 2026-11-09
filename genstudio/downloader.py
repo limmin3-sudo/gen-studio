@@ -108,7 +108,7 @@ def download(f: FileSpec, dest: Path, client: httpx.Client, key: str | None, ver
     else:
         raise RuntimeError("다섯 번 시도했지만 받지 못했어요. 잠시 후 다시 실행하면 이어서 받습니다.")
 
-    if f.size and part.stat().st_size != f.size:
+    if f.size and not f.size_ok(part.stat().st_size):
         raise RuntimeError(f"크기가 맞지 않아요 ({part.stat().st_size} != {f.size}). 다시 실행하면 이어서 받습니다.")
     if verify and f.sha256:
         if not on_progress:

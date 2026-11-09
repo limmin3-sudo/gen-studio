@@ -58,7 +58,7 @@ Writing prompts (important for quality):
 - Always write the prompt in English, even when the user speaks Korean; translate and keep every detail.
 - style=semi (Illustrious) understands comma-separated tags best, e.g. "1girl, white collared shirt, black pencil skirt, city street, night, rain".
 - style=realistic / wan understand natural sentences: subject, clothing, pose, place, light, camera.
-- style=text (Qwen): put the exact words to render in double quotes and describe layout.
+- Text in the picture: put the exact words in double quotes and describe the layout.
 - The user's request decides the content; pass it through faithfully."""
 
 

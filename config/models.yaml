@@ -50,7 +50,7 @@ families:
     loader: unet
     clip: qwen3vl_8b_int8_convrot.safetensors
     clip_type: qwen_image
-    vae: qwen_image_2.1_vae_bf16.safetensors
+    vae: texture_fix_vae_for_qwen_image_2.1_bf16.safetensors   # RedCraft QW21과 함께 배포된 질감 보정 VAE
     encoder: qwen21
     latent: generic
     # Turbo의 공식 8단계 스케줄 (ComfyUI 공식 템플릿 값)
@@ -67,119 +67,55 @@ families:
         url: https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors
         size: 9350798360
         sha256: 8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f
-      - name: qwen_image_2.1_vae_bf16.safetensors
+      - name: texture_fix_vae_for_qwen_image_2.1_bf16.safetensors
         dir: vae
-        url: https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors
+        civitai_version: 3407259
         size: 675509688
-        sha256: bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
-
-  wan22:
-    name: "Wan 2.2 14B"
-    loader: unet
-    clip: umt5_xxl_fp8_e4m3fn_scaled.safetensors
-    clip_type: wan
-    vae: wan_2.1_vae.safetensors        # Wan 2.2 14B는 2.1과 같은 VAE를 씁니다
-    latent: video                       # 1프레임 영상 = 사진
-    shift_node: sd3
-    shift: 5
-    high_noise: wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
-    switch_step: 2
-    # ComfyUI 공식 템플릿의 4단계 LightX2V 설정 (빠름). 끄려면 loras를 비우고 steps 20, cfg 3.5, shift 8, switch_step 10
-    loras:
-      - {name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors, stage: high, strength: 1.0}
-      - {name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors, stage: low, strength: 1.0}
-    steps: 4
-    cfg: 1.0
-    sampler: euler
-    scheduler: simple
-    negative: true
-    prompt_prefix: ""
-    negative_default: "oversaturated, overexposed, blurry details, subtitles, watermark, worst quality, low quality, jpeg artifacts, ugly, deformed, extra fingers, bad hands, bad face, malformed limbs, fused fingers, messy background"
-    files:
-      - name: wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
-        dir: diffusion_models
-        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
-        size: 14293923632
-        sha256: cad711ae211c8b23455ec68cd6a190a33a3d874234a77eb57266d73f8f0e6c9f
-      - name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
-        dir: loras
-        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
-        size: 1226977424
-        sha256: 698321cb86bd30c4af06c9b84e656a1048c8cb54e06d50694536fb5de37fde41
-      - name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
-        dir: loras
-        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
-        size: 1226977424
-        sha256: ec95216e614b3c132c11bfb387b11feedf62163150ccc9068bca8a189771e75a
-      - name: umt5_xxl_fp8_e4m3fn_scaled.safetensors
-        dir: text_encoders
-        url: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
-        size: 6735906897
-        sha256: c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68
-      - name: wan_2.1_vae.safetensors
-        dir: vae
-        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
-        size: 253815318
-        sha256: 2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b
+        sha256: 36F56608B02077A50A08EA3DBCDB88351298CEBA49948F41F9F87186378E6908
 
 models:
-  - id: cyberrealistic-zit
-    best_for: "실사 인물, 피부와 조명. NSFW 가능, 빠름"
-    name: "CyberRealistic Z-Image Turbo v10"
-    family: zimage
+  # 실사 주력: 무검열 Qwen-Image 2.1 Turbo 튜닝 (생성, 참고 이미지, 문장 편집, 자세 바꾸기, 글자까지)
+  - id: redcraft-qw21
+    best_for: "무검열 실사. 참고 이미지·문장 편집·자세 바꾸기·글자까지 (Qwen 2.1 Turbo 튜닝)"
+    name: "RedCraft QW21 v3 (무검열 Qwen 2.1)"
+    family: qwen21
     style: realistic
+    also: [text]
     role: main
     file:
-      name: CyberRealistic_zit_v10.0_fp8_e4m3.safetensors
+      name: REDQW21-UNLOCKED-v3-FP8-ComfyMCP-builtwithqwen.safetensors
       dir: diffusion_models
-      civitai_version: 3411348
-      size: 6883550608
-      sha256: F74F5E7144B7922B57210EE223F37279CE9D6BBAF8724DD0F4B5412858A99A8A
+      civitai_version: 3407259
+      size: 7116801326
+      sha256: 7BA6C0774C233540EF6EA0EA3971ACF3CBF403F70BD3672AF57EACA00C33578E
 
+  # 실사 도우미: 디테일 보정, 업스케일 다시 그리기, 포즈 컨트롤넷, 실사 LoRA 학습을 맡는 무검열 Z-Image
+  - id: pornmaster-zit
+    best_for: "무검열 실사 (Z-Image). 디테일 보정·업스케일·포즈·LoRA 학습 도우미"
+    name: "PornMaster Z-Image Turbo V3.5"
+    family: zimage
+    style: realistic
+    role: helper
+    file:
+      name: "PornMaster z-image Turbo V3.5_fp8.safetensors"
+      dir: diffusion_models
+      civitai_version: 2836226
+      size: 6154977632
+      sha256: 2B107A430B3121E1A5CC561C94EAEA6BC37AB2AFC550EF33D218C1CCECA18D95
 
-  - id: realism-illustrious
-    best_for: "실사에 가까운 반실사, 다양한 포즈. NSFW 가능. 영어 태그 프롬프트가 잘 먹힘"
-    name: "Realism Illustrious v5.5 (Stable Yogi)"
+  # 반실사 주력
+  - id: illustrij
+    best_for: "반실사. 성인 표현 강함. 영어 태그 프롬프트가 잘 먹힘"
+    name: "Illustrij v21"
     family: illustrious
     style: semi
     role: main
-    prompt_prefix: "99bsy99, masterpiece, best quality, realistic, "
     file:
-      name: "Realism By Stable Yogi Illustrious V5.5 CIV FP16.safetensors"
+      name: Illustrijv21.safetensors
       dir: checkpoints
-      civitai_version: 2831949
-      size: 6938040960
-      sha256: D6ED32169BD6605F1AA21A4F603799E3865E97B80A7DEDED0C4D8B0BF133D2A4
-
-
-  # 글자, 포스터, 간판, 복잡한 구도처럼 문장을 정확히 따라야 할 때
-  - id: qwen-image-21-turbo
-    best_for: "글자·포스터, 긴 문장, 참고 이미지로 같은 인물 유지, 문장 편집. NSFW는 약함"
-    name: "Qwen-Image 2.1 Turbo"
-    family: qwen21
-    style: text
-    role: main
-    file:
-      name: qwen_image_2.1_turbo_int8_convrot.safetensors
-      dir: diffusion_models
-      url: https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors
-      size: 7256787829
-      sha256: 8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c
-
-  # 극실사 사진. 4단계 영상 기능에서도 같은 파일을 씁니다.
-  - id: wan22-14b
-    best_for: "극실사 사진 질감. NSFW 가능, 가장 느림"
-    name: "Wan 2.2 14B"
-    family: wan22
-    style: realistic
-    role: alt
-    keywords: ["극실사", "초실사", "하이퍼리얼", "hyperrealistic", "hyper realistic", "ultra realistic", "ultra-realistic", "wan"]
-    file:
-      name: wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
-      dir: diffusion_models
-      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
-      size: 14293923632
-      sha256: e71b96d7c82e638694c5e7fb98fac4bfb0e4ddc5fbbb4b1df40da8f0f1278a97
+      civitai_version: 2728617
+      size: 7419803912
+      sha256: 105C4D62610D186E1B7E4100545B0AE9FAA0C730E70BCFF787A436A5D8069464
 
 # 생성 모델이 아닌 도구용 파일
 tools:
@@ -230,28 +166,18 @@ tools:
       url: https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors
       size: 2502139104
       sha256: b8524e557a7df60d081f5d4a0eb109967d107df217943bf88c2d99b9ebcc06c5
-  # 이미지 → 영상: Wan 2.2 I2V 14B (fp8) + 4스텝 LightX2V (ComfyUI 공식 템플릿). 순서: high, low, lora high, lora low, 텍스트, VAE
+  # 이미지 → 영상: DaSiWa WAN 2.2 I2V 14B Lightspeed (성인용 튜닝, 4스텝 가속 내장). high, low, 텍스트, VAE
   video_i2v:
-    - name: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+    - name: DaSiWa_Wan22_I2V_14B_SnatchKiss_v11_HIGH_fp8.safetensors
       dir: diffusion_models
-      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
-      size: 14294742832
-      sha256: 6122e79d55e0f235698d11d657f3b196c5273c830da00b2b013c5a048d5e6a42
-    - name: wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+      civitai_version: 2953474
+      size: 14528782272
+      sha256: FA4202EA621725C57B0CBB84543BD6A5548DE1D85C0C5A9F18DB0BCF91202A54
+    - name: DaSiWa_Wan22_I2V_14B_SnatchKiss_v11_LOW_fp8.safetensors
       dir: diffusion_models
-      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
-      size: 14294742832
-      sha256: 5471a457b6ac404202a5fbe6c11595a3d5641fc766b00f38763f72303fffc21e
-    - name: wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
-      dir: loras
-      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
-      size: 1226977424
-      sha256: d176c808d6fc461999b68e321efcb7501b20b8c3797523ed0df14f7d1deff11e
-    - name: wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
-      dir: loras
-      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
-      size: 1226977424
-      sha256: 024f21de095bc8fad9809ded3e9e49a2e170dcf27075da8145ba7d60d8aab7f9
+      civitai_version: 2953485
+      size: 14528782272
+      sha256: 6E746571355BB589B966A72ED7A8717A09AF0AEAF699391138E9788BACE224D1
     - name: umt5_xxl_fp8_e4m3fn_scaled.safetensors
       dir: text_encoders
       url: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors

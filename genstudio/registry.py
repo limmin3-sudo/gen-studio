@@ -33,7 +33,13 @@ class FileSpec:
         p = self.path(models_dir)
         if not p.exists():
             return False
-        return self.size is None or p.stat().st_size == self.size
+        return self.size_ok(p.stat().st_size)
+
+    def size_ok(self, actual: int) -> bool:
+        """Civitai lists sizes in rounded KB; its files are checked by sha256 instead, so allow a few KB there."""
+        if self.size is None:
+            return True
+        return abs(actual - self.size) <= (4096 if self.civitai_version and self.sha256 else 0)
 
 
 @dataclass
@@ -69,12 +75,16 @@ class ModelSpec:
     name: str
     family: Family
     style: str                          # realistic | semi | text
-    role: str                           # main | alt
+    role: str                           # main | alt | helper (works behind the scenes: detail, upscale, pose, training)
     file: FileSpec
     prompt_prefix: str | None = None
     keywords: list[str] = field(default_factory=list)   # words that pick this model directly
     optional: bool = False                               # not downloaded unless asked for
     best_for: str = ""                                   # one line shown next to the model in pickers
+    also: list[str] = field(default_factory=list)        # other styles this model covers (e.g. text)
+
+    def covers(self, style: str) -> bool:
+        return style == self.style or style in self.also
 
     @property
     def prefix(self) -> str:
@@ -158,6 +168,7 @@ class Registry:
                 "family": m.family.id,
                 "family_name": m.family.name,
                 "style": m.style,
+                "also": m.also,
                 "role": m.role,
                 "optional": m.optional,
                 "best_for": m.best_for,

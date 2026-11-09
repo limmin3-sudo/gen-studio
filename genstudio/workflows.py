@@ -369,16 +369,19 @@ WAN_NEGATIVE = ("色调艳丽，过曝，静态，细节模糊不清，字幕，
 
 def image_to_video(image_name: str, files: list[str], prompt: str, negative: str, width: int, height: int,
                    frames: int, seed: int, fps: int = 16, prefix: str = "gen-studio/video") -> dict:
-    """Wan 2.2 I2V 14B with the 4-step LightX2V LoRAs: ComfyUI's official "Image to Video (Wan 2.2)" template.
-    files: high, low, lora high, lora low, text encoder, vae."""
-    high, low, l_high, l_low, te, vae = files
+    """Wan 2.2 I2V 14B, 4 steps (ComfyUI's official "Image to Video (Wan 2.2)" template).
+    files: high, low, text encoder, vae, and optionally the two speed-up LoRAs (high, low) for the official
+    weights; tuned models with the speed-up already baked in (e.g. DaSiWa Lightspeed) come without them."""
+    high, low, te, vae = files[:4]
+    l_high, l_low = (files[4], files[5]) if len(files) >= 6 else (None, None)
     g = Graph()
     clip = out(g.add("CLIPLoader", clip_name=te, type="wan", device="default"))
     v = out(g.add("VAELoader", vae_name=vae))
 
     def expert(unet, lora):
         m = out(g.add("UNETLoader", unet_name=unet, weight_dtype="default"))
-        m = out(g.add("LoraLoaderModelOnly", model=m, lora_name=lora, strength_model=1.0))
+        if lora:
+            m = out(g.add("LoraLoaderModelOnly", model=m, lora_name=lora, strength_model=1.0))
         return out(g.add("ModelSamplingSD3", model=m, shift=5.0))
 
     mh, ml = expert(high, l_high), expert(low, l_low)

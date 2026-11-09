@@ -1,7 +1,7 @@
 from genstudio import router
 from genstudio.registry import Registry
 
-REG = Registry.load()
+REG = Registry.load(__import__("pathlib").Path(__file__).parent / "fixtures" / "models.yaml")
 
 
 def pick(prompt, **kw):

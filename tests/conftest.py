@@ -10,6 +10,15 @@ from fake_comfy import FakeComfy  # noqa: E402
 from genstudio.config import Settings  # noqa: E402
 
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _frozen_model_list(monkeypatch):
+    """Tests run against a fixed copy of the model list, so changing the real lineup doesn't rewrite them."""
+    monkeypatch.setattr("genstudio.registry.CONFIG_DIR", FIXTURES)
+
+
 @pytest.fixture
 def settings(tmp_path):
     return Settings(comfy_url="http://comfy.test", comfy_path=None, output_dir=tmp_path / "outputs")
