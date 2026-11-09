@@ -202,6 +202,24 @@ def outpaint(model: ModelSpec, image_name: str, pads: dict, prompt: str, negativ
     src = out(g.add("LoadImage", image=image_name))
     pad = g.add("ImagePadForOutpaint", image=src, left=int(pads.get("left", 0)), top=int(pads.get("top", 0)),
                 right=int(pads.get("right", 0)), bottom=int(pads.get("bottom", 0)), feathering=int(feathering))
+    if model.family.encoder == "qwen21":
+        # Qwen sees the whole enlarged canvas (image 1) and where it is empty (image 2), so the new part continues
+        # the existing picture instead of being painted as a separate scene.
+        instruction = (
+            "Image 1 is a photo placed on a larger canvas; the plain gray area is empty. Image 2 shows that empty area in "
+            "white. Extend the photo into the empty area so the result looks like one continuous photograph"
+            + (f": {prompt}" if prompt else "") + ". Continue the same person, body proportions, clothing, furniture, "
+            "floor, background, lighting and style. Do not change anything that is already visible in image 1.")
+        mask_img = out(g.add("MaskToImage", mask=out(pad, 1)))
+        neg_text = ", ".join(x for x in (negative.strip(), model.family.negative_default) if x)
+        enc = g.add("TextEncodeQwenImage21", clip=c, prompt=instruction, negative_prompt=neg_text, vae=v, resolution=0,
+                    **{"images.image_1": out(pad, 0), "images.image_2": mask_img})
+        s = _sampler(g, model, ms, out(enc, 0), out(enc, 1), out(enc, 2), seed, 1.0, None, cfg)
+        img = out(g.add("VAEDecode", samples=s, vae=v))
+        merged = out(g.add("ImageCompositeMasked", destination=out(pad, 0), source=img, x=0, y=0, resize_source=True,
+                           mask=out(pad, 1)))
+        g.add("SaveImage", filename_prefix=prefix, images=merged)
+        return g.nodes, {"final_prompt": instruction}
     text = _masked_redraw(g, model, ms, c, v, out(pad, 0), out(pad, 1), prompt, negative, seed, 1.0, steps, cfg, prefix)
     return g.nodes, {"final_prompt": text}
 

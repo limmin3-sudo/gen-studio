@@ -186,3 +186,17 @@ def test_full_body_request_becomes_canvas_expansion(client, fake):
     assert "full body shot" in nodes(last_graph(fake), "CLIPTextEncode")[0]["text"]
     rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
     assert rec["label"].startswith("캔버스 늘리기 9:16")
+
+
+def test_qwen_outpaint_continues_the_picture(client, fake):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": '간판 "OPEN"'}).json()["id"])   # Qwen image
+    e = wait_job(client, client.post("/api/edit", json={"image_id": j["result_ids"][0], "mode": "reference",
+                                                         "prompt": "전신 나오게 해줘"}).json()["id"])
+    assert e["status"] == "done", e["error"]
+    g = last_graph(fake)
+    enc = nodes(g, "TextEncodeQwenImage21")[0]
+    assert {"images.image_1", "images.image_2"} <= set(enc)
+    assert "one continuous photograph" in enc["prompt"] and "full body shot" in enc["prompt"]
+    assert "SetLatentNoiseMask" not in [n["class_type"] for n in g.values()]
+    comp = nodes(g, "ImageCompositeMasked")[0]
+    assert comp["resize_source"] is True and comp["destination"][0] == comp["mask"][0]    # pasted onto the padded canvas

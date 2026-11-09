@@ -598,7 +598,10 @@ class Engine:
         elif req.mode == "outpaint":
             mask_bytes = None
             auto = job.decision.get("auto_expand")
-            prompt = ", ".join(x for x in (base_prompt, auto["add"]) if x) if auto else (req.prompt.strip() or base_prompt)
+            if model.family.encoder == "qwen21":
+                prompt = ", ".join(x for x in (auto["add"] if auto else "", req0.prompt.strip()) if x)
+            else:
+                prompt = ", ".join(x for x in (base_prompt, auto["add"]) if x) if auto else (req.prompt.strip() or base_prompt)
             graph, extra = workflows.outpaint(model, image_name, job.decision["pads"], prompt, req.negative, seed,
                                               models_dir=self.settings.models_dir, **lw)
         else:
