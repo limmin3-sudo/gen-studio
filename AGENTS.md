@@ -41,6 +41,11 @@ engine; this repo is the orchestrator + web UI + desktop app + MCP server. UI te
 - **Don't drop existing routes** in `genstudio/app.py`: the MCP route (`app.router.routes.extend(mcp_app.routes)`),
   the `ValueError` handler and the static mount must stay, in that order.
 - Prefer one tool pushing at a time. Say in the commit message what you changed and why.
+- **Tools that upload whole files through a size-limited editor must not edit big files.** `web/app.js` (~90KB,
+  1200+ lines) and `tests/test_*.py` were cut down or replaced by placeholders three times on 2026-11-09
+  (`PLACEHOLDER_FULL_FILE`, `PLACEHOLDER_TEST`, functions turned into `/* original */`). If you can't write the
+  complete file, describe the exact lines to change and let a tool with a local checkout (Codex, Claude) apply them.
+  After any push, `wc -l web/app.js` should still be 1200+ and the test count should not drop.
 
 ### What happened on 2026-11-09 (why the rules above exist)
 Seven commits pushed from another tool replaced `web/app.js` with the text `PLACEHOLDER_FULL_FILE` (the whole UI
