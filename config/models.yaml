@@ -135,18 +135,6 @@ models:
       size: 6883550608
       sha256: F74F5E7144B7922B57210EE223F37279CE9D6BBAF8724DD0F4B5412858A99A8A
 
-  - id: realdream-zit
-    optional: true          # 기본 설치에서 제외. 받으려면: update.bat 대신 download_models.py --models realdream-zit
-    name: "Real Dream ZIT v7"
-    family: zimage
-    style: realistic
-    role: alt
-    file:
-      name: real-dream-zit-7-fp8.safetensors
-      dir: diffusion_models
-      civitai_version: 3032830
-      size: 7245301944
-      sha256: 53453E27F156B24F90BEC2A862731EC34CBDCC1D559C2F58C0A7F826B947C216
 
   - id: realism-illustrious
     name: "Realism Illustrious v5.5 (Stable Yogi)"
@@ -161,18 +149,6 @@ models:
       size: 6938040960
       sha256: D6ED32169BD6605F1AA21A4F603799E3865E97B80A7DEDED0C4D8B0BF133D2A4
 
-  - id: semireal-mm
-    optional: true          # 기본 설치에서 제외. 받으려면: update.bat 대신 download_models.py --models semireal-mm
-    name: "Semi-Real (Illustrious) MM v5"
-    family: illustrious
-    style: semi
-    role: alt
-    file:
-      name: SemiRealMMv5.safetensors
-      dir: checkpoints
-      civitai_version: 3441825
-      size: 7105348384
-      sha256: 41B1A41B9C3539F8C6021EDC6A98E2237D5006B1473C311B5B1E2B3E7B92187C
 
   # 글자, 포스터, 간판, 복잡한 구도처럼 문장을 정확히 따라야 할 때
   - id: qwen-image-21-turbo

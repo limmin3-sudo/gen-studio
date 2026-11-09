@@ -22,8 +22,7 @@
 3. **`install.bat`** 을 더블클릭합니다. 다음을 자동으로 합니다.
    - 파이썬 환경 준비 (uv 사용, 파이썬을 따로 설치할 필요 없음)
    - ComfyUI 포터블 설치 (약 2GB)
-   - 모델 다운로드 (약 75GB). 보조 모델 2개는 빠져 있고, 필요하면
-     `.venv\Scripts\python scripts\download_models.py --models realdream-zit semireal-mm` 로 받습니다. 처음 한 번 Civitai API 키를 물어봅니다. 키는 이 PC의 `data/secrets.json` 에만 저장됩니다.
+   - 모델 다운로드 (약 75GB).
 
    중간에 끊겨도 다시 실행하면 이어서 진행합니다.
 4. **`start.bat`** 을 더블클릭하면 ComfyUI가 켜지고 브라우저에서 Gen Studio가 열립니다 (`http://127.0.0.1:7860`).
@@ -33,9 +32,7 @@
 | 용도 | 모델 | 기반 |
 |---|---|---|
 | 실사 (기본) | CyberRealistic Z-Image Turbo v10 | Z-Image Turbo |
-| 실사 (보조, 선택 설치) | Real Dream ZIT v7 | Z-Image Turbo |
 | 반실사 (기본) | Realism Illustrious v5.5 (Stable Yogi) | Illustrious (SDXL) |
-| 반실사 (보조, 선택 설치) | Semi-Real (Illustrious) MM v5 | Illustrious (SDXL) |
 | 글자·디자인 | Qwen-Image 2.1 Turbo | Qwen-Image 2.1 (7B) |
 | 극실사 | Wan 2.2 14B (LightX2V 4단계) | Wan 2.2 (영상 모델의 1프레임) |
 

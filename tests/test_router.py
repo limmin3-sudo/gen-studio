@@ -29,8 +29,8 @@ def test_realistic_keyword():
 
 def test_explicit_style_and_model():
     assert pick("anything", style="semi").model.family.id == "illustrious"
-    d = pick("anything", model_id="semireal-mm")
-    assert d.model.id == "semireal-mm" and d.style == "semi"
+    d = pick("anything", model_id="realism-illustrious")
+    assert d.model.id == "realism-illustrious" and d.style == "semi"
 
 
 def test_aspect_detection():
@@ -51,8 +51,8 @@ def test_split_negative():
 
 
 def test_edit_uses_source_model():
-    m, why = router.model_for_edit(REG, "semireal-mm", None)
-    assert m.id == "semireal-mm"
+    m, why = router.model_for_edit(REG, "qwen-image-21-turbo", None)
+    assert m.id == "qwen-image-21-turbo"
     m, why = router.model_for_edit(REG, None, None)
     assert m.style == "realistic"
 

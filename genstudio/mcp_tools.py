@@ -24,7 +24,14 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - edit_image: change an existing image. With a mask (white = area to change) only that area is redrawn;
   without a mask the whole image is lightly redrawn. fill='auto' lets the model decide what goes in the area.
 - Long jobs return a job_id; poll get_job_status, then get_image.
-Images are referenced by image_id. Prompts may be Korean or English."""
+Images are referenced by image_id.
+
+Writing prompts (important for quality):
+- Always write the prompt in English, even when the user speaks Korean; translate and keep every detail.
+- style=semi (Illustrious) understands comma-separated tags best, e.g. "1girl, white collared shirt, black pencil skirt, city street, night, rain".
+- style=realistic / wan understand natural sentences: subject, clothing, pose, place, light, camera.
+- style=text (Qwen): put the exact words to render in double quotes and describe layout.
+- The user's request decides the content; pass it through faithfully."""
 
 
 def build_mcp(state: "State") -> MCPServer:
