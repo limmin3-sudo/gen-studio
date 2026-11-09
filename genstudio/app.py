@@ -7,14 +7,14 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__, router
 from .comfy import ComfyClient
 from .config import ROOT, Settings, access_token, load_settings
-from .jobs import EditRequest, Engine, GenerateRequest
+from .jobs import EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -185,6 +185,55 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
                                   bool(body.get("overwrite", False)))
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
+
+    # -------------------------------------------------------------- segments
+    @app.post("/api/images/{image_id}/segment")
+    async def segment(image_id: str, body: dict | None = None):
+        body = body or {}
+        try:
+            return engine.submit_segment(SegmentRequest(image_id=image_id, labels=body.get("labels"),
+                                                        points=body.get("points"),
+                                                        negative_points=body.get("negative_points"))).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/images/{image_id}/segments")
+    async def segments(image_id: str):
+        try:
+            return engine.segments.load(image_id)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    def _seg_png(fn, *args):
+        try:
+            return Response(fn(*args), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    @app.get("/api/images/{image_id}/segments/{sid}/mask")
+    async def segment_mask(image_id: str, sid: str):
+        return _seg_png(engine.segments.alpha_mask, image_id, sid)
+
+    @app.get("/api/images/{image_id}/segments/{sid}/cutout")
+    async def segment_cutout(image_id: str, sid: str, size: int | None = None):
+        return _seg_png(engine.segments.cutout, image_id, sid, size)
+
+    @app.get("/api/images/{image_id}/segments.zip")
+    async def segments_zip(image_id: str):
+        import io as _io
+        import zipfile
+        segs = engine.segments.load(image_id)
+        if not segs:
+            raise HTTPException(404, "세그먼트가 없어요. 먼저 분석하세요.")
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for i, s in enumerate(segs, 1):
+                name = f"{i:02d}-{s['label'].replace(' ', '_')}{'-' + str(s['instance']) if s.get('instance') else ''}.png"
+                z.writestr(name, engine.segments.cutout(image_id, s["id"]))
+        return Response(buf.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{image_id}-segments.zip"'})
 
     @app.post("/api/images/{image_id}/regenerate")
     async def regenerate(image_id: str):

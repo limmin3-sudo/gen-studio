@@ -21,6 +21,52 @@ class FakeComfy:
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
 
+    describe_reply = ('```json\n[{"label": "woman", "ko": "여성", "parent": null},'
+                      ' {"label": "blonde hair", "ko": "금발 머리", "parent": "woman"},'
+                      ' {"label": "white collared shirt", "ko": "흰 칼라 셔츠", "parent": "woman"},'
+                      ' {"label": "epaulets", "ko": "견장", "parent": "white collared shirt"},'
+                      ' {"label": "unicorn", "ko": "유니콘", "parent": null},'
+                      ' {"label": "background", "ko": "배경", "parent": null}]\n```')
+
+    def _is_mask(self, graph: dict, save_id: str) -> bool:
+        src = graph[save_id]["inputs"]["images"][0]
+        return graph[src]["class_type"] == "MaskToImage"
+
+    def _image_size(self, graph: dict) -> tuple[int, int]:
+        for n in graph.values():
+            if n["class_type"] == "LoadImage":
+                data = self.uploads.get(n["inputs"]["image"])
+                if data:
+                    with Image.open(io.BytesIO(data)) as im:
+                        return im.size
+        return 256, 256
+
+    def _masks(self, graph: dict, save_id: str) -> list[bytes]:
+        """Fake SAM 3: boxes per label; 'epaulets' finds two, unknown labels find nothing."""
+        w, h = self._image_size(graph)
+        det = graph[graph[save_id]["inputs"]["images"][0]]["inputs"]["mask"][0]
+        d = graph[det]["inputs"]
+        boxes = []
+        if "positive_coords" in d:
+            pts = json.loads(graph[d["positive_coords"][0]]["inputs"]["value"])
+            boxes = [(p["x"] - 20, p["y"] - 20, p["x"] + 20, p["y"] + 20) for p in pts]
+        else:
+            label = graph[d["conditioning"][0]]["inputs"]["text"]
+            table = {"woman": [(w * .3, h * .1, w * .7, h * .95)], "blonde hair": [(w * .4, h * .1, w * .6, h * .25)],
+                     "white collared shirt": [(w * .35, h * .3, w * .65, h * .55)],
+                     "epaulets": [(w * .36, h * .3, w * .44, h * .33), (w * .56, h * .3, w * .64, h * .33)],
+                     "background": [(0, 0, w, h * .08)], "person": [(w * .3, h * .1, w * .7, h * .95)]}
+            boxes = table.get(label, [])
+        out = []
+        for b in boxes or [None]:
+            m = Image.new("RGB", (w, h), 0)
+            if b:
+                m.paste((255, 255, 255), tuple(int(v) for v in b))
+            buf = io.BytesIO()
+            m.save(buf, "PNG")
+            out.append(buf.getvalue())
+        return out
+
     def _render(self, graph: dict) -> bytes:
         w = h = 64
         for node in graph.values():
@@ -69,11 +115,19 @@ class FakeComfy:
             if self.fail_with:
                 return httpx.Response(200, json={pid: {"outputs": {}, "status": {"status_str": "error", "completed": False,
                     "messages": [["execution_error", {"node_type": "KSampler", "exception_message": self.fail_with}]]}}})
-            save = next(k for k, n in self.prompts[pid].items() if n["class_type"] == "SaveImage")
-            return httpx.Response(200, json={pid: {
-                "outputs": {save: {"images": [{"filename": f"{pid}.png", "subfolder": "gen-studio", "type": "output"}]}},
-                "status": {"status_str": "success", "completed": True}}})
+            graph = self.prompts[pid]
+            outputs = {}
+            for nid, n in graph.items():
+                if n["class_type"] == "SaveImage":
+                    k = len(self._masks(graph, nid)) if self._is_mask(graph, nid) else 1
+                    outputs[nid] = {"images": [{"filename": f"{pid}_{nid}_{j}.png", "subfolder": "gen-studio", "type": "output"}
+                                               for j in range(k)]}
+                if n["class_type"] == "PreviewAny":
+                    outputs[nid] = {"text": [self.describe_reply]}
+            return httpx.Response(200, json={pid: {"outputs": outputs, "status": {"status_str": "success", "completed": True}}})
         if path == "/view":
-            pid = request.url.params["filename"].removesuffix(".png")
-            return httpx.Response(200, content=self._render(self.prompts[pid]), headers={"content-type": "image/png"})
+            pid, nid, j = request.url.params["filename"].removesuffix(".png").rsplit("_", 2)
+            graph = self.prompts[pid]
+            data = self._masks(graph, nid)[int(j)] if self._is_mask(graph, nid) else self._render(graph)
+            return httpx.Response(200, content=data, headers={"content-type": "image/png"})
         return httpx.Response(404)

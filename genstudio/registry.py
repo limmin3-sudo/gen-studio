@@ -113,10 +113,19 @@ def is_full_checkpoint(path: Path) -> bool:
 
 
 class Registry:
-    def __init__(self, families: dict[str, Family], models: list[ModelSpec]):
+    def __init__(self, families: dict[str, Family], models: list[ModelSpec],
+                 tools: dict[str, list[FileSpec]] | None = None):
         self.families = families
         self.models = models
+        self.tools = tools or {}
         self.by_id = {m.id: m for m in models}
+
+    def tool_ready(self, name: str, models_dir: Path | None) -> bool:
+        files = self.tools.get(name, [])
+        return bool(files) and all(f.installed(models_dir) is not False for f in files)
+
+    def tool_file(self, name: str) -> str:
+        return self.tools[name][0].name
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Registry":
@@ -132,7 +141,8 @@ class Registry:
             m = dict(m)
             fam = families[m.pop("family")]
             models.append(ModelSpec(family=fam, file=FileSpec(**m.pop("file")), **m))
-        return cls(families, models)
+        tools = {k: [FileSpec(**f) for f in v or []] for k, v in (raw.get("tools") or {}).items()}
+        return cls(families, models, tools)
 
     def get(self, model_id: str) -> ModelSpec:
         if model_id not in self.by_id:

@@ -150,16 +150,19 @@ def main() -> int:
 
     todo: list[tuple[str, FileSpec]] = []
     seen: set[str] = set()
-    for m in chosen:
-        for f in m.all_files():
+    groups = [(m.name, m.all_files()) for m in chosen]
+    if not args.models:
+        groups += [(f"도구: {name}", files) for name, files in reg.tools.items()]
+    for label, files in groups:
+        for f in files:
             key = f"{f.dir}/{f.name}"
             if key in seen:
                 continue
             seen.add(key)
             ok = f.installed(models_dir)
-            print(f"  {'✓' if ok else '·'} {f.dir}/{f.name}  ({human(f.size or 0)})  [{m.name}]")
+            print(f"  {'✓' if ok else '·'} {f.dir}/{f.name}  ({human(f.size or 0)})  [{label}]")
             if not ok:
-                todo.append((m.name, f))
+                todo.append((label, f))
 
     if not todo:
         print("\n모든 모델이 준비돼 있어요.")

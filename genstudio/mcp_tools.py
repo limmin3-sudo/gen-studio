@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image as MCPImage
 from PIL import Image
 
-from .jobs import EditRequest, GenerateRequest
+from .jobs import EditRequest, GenerateRequest, SegmentRequest
 
 if TYPE_CHECKING:
     from .app import State
@@ -26,6 +26,10 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
     keep the person"); extra reference images (outfits, people, places) can be given. Best for SFW edits.
   * mask: white = area to change, only that area is redrawn. fill='auto' lets the model decide what goes there.
   * expand: grow the canvas to a new aspect ratio (e.g. portrait head-shot -> head-to-thigh 3:4, anchor='top').
+- Segments: segment_image(image_id) finds the parts (person, hair, shirt, epaulets ...) and returns a numbered
+  overview picture plus the list. Then edit_image(image_id, segments=["3"] or ["white collared shirt"],
+  prompt="red leather jacket") redraws just those parts; fill="auto" deletes them and lets the model fill in,
+  fill="clear" deletes and blends with the surroundings. points=[{x,y}] selects whatever is at a pixel.
 - Characters: create_character(name, image ids or paths) once, then generate_image(character=name, ...) keeps
   the same face and outfit across scenes (tutorials, series).
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
@@ -134,6 +138,7 @@ def build_mcp(state: "State") -> MCPServer:
         image_base64: str | None = None,
         image_path: str | None = None,
         mask_base64: str | None = None,
+        segments: list[str] | None = None,
         fill: Literal["prompt", "auto", "clear"] = "prompt",
         mode: Literal["auto", "instruction", "mask", "redraw", "expand"] = "auto",
         reference_ids: list[str] | None = None,
@@ -161,14 +166,14 @@ def build_mcp(state: "State") -> MCPServer:
             image_id = rec["id"]
         refs = _bring_in(reference_ids, reference_paths)
         if mode == "auto":
-            mode = "mask" if mask_base64 else "expand" if expand_aspect else "instruction"
+            mode = "mask" if (mask_base64 or segments) else "expand" if expand_aspect else "instruction"
         if mode == "instruction" and not any(m.family.encoder == "qwen21" and m.installed(state.settings.models_dir) is not False
                                              for m in state.registry.models):
             mode = "redraw"   # Qwen not installed: fall back to a light whole-image redraw
         internal = {"mask": "inpaint", "redraw": "variation", "instruction": "reference", "expand": "outpaint"}[mode]
         req = EditRequest(image_id=image_id, prompt=prompt, mode=internal, fill=fill, mask_png=mask_base64,
                           denoise=denoise, model=model, seed=seed, references=refs, character=character,
-                          aspect=expand_aspect, anchor=expand_anchor)
+                          aspect=expand_aspect, anchor=expand_anchor, segments=segments or [])
         job = state.engine.submit_edit(req)
         return await _finish(job, wait_seconds, include_image)
 
@@ -190,6 +195,31 @@ def build_mcp(state: "State") -> MCPServer:
     @mcp.tool(description="List recent images with their image_ids, newest first.")
     async def list_images(limit: int = 20):
         return [_info(r["id"]) for r in state.library.list(limit=max(1, min(limit, 100)))]
+
+    def _seg_list(image_id: str) -> list[dict]:
+        return [{"number": i, "id": s["id"], "label": s["label"], "ko": s.get("ko"), "parent": s.get("parent"),
+                 "instance": s.get("instance"), "bbox": s["bbox"], "area": s["area"]}
+                for i, s in enumerate(state.engine.segments.load(image_id), 1)]
+
+    @mcp.tool(description=(
+        "Find the parts of an image (people, hair, clothing items, accessories, objects, background). Returns a "
+        "numbered overview picture and the list. labels: optional English nouns to look for (e.g. ['epaulets']); "
+        "points: optional [{x, y}] pixels to select whatever is there. Reuses earlier results unless refresh=true."))
+    async def segment_image(image_id: str | None = None, image_path: str | None = None, labels: list[str] | None = None,
+                            points: list[dict] | None = None, refresh: bool = False, wait_seconds: int = 45):
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        existing = state.engine.segments.load(image_id)
+        if existing and not (refresh or labels or points):
+            return [{"image_id": image_id, "segments": _seg_list(image_id)},
+                    MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+        job = state.engine.submit_segment(SegmentRequest(image_id=image_id, labels=labels, points=points))
+        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
+        if job.status != "done":
+            return {"image_id": image_id, "job_id": job.id, "status": job.status, "error": job.error,
+                    "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
+        return [{"image_id": image_id, "segments": _seg_list(image_id)},
+                MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
 
     @mcp.tool(description="Save a character (name + 1-6 reference images) so later generations keep the same person.")
     async def create_character(name: str, image_ids: list[str] | None = None, image_paths: list[str] | None = None,

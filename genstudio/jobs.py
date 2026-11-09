@@ -14,7 +14,8 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import router, workflows
-from .comfy import ComfyClient, ComfyError
+from .comfy import ComfyClient, ComfyError, iter_images, output_text
+from .segments import DESCRIBE_PROMPT, FALLBACK_LABELS, SegmentStore, parse_labels
 from .config import Settings
 from .library import Library
 from .registry import Registry
@@ -63,6 +64,14 @@ class EditRequest(BaseModel):
     aspect: str | None = Field(None, description="예: 3:4, 9:16, 16:9")
     anchor: Literal["center", "top", "bottom", "left", "right"] = "center"
     pads: dict[str, int] | None = None
+    segments: list[str] = Field(default_factory=list, description="세그먼트 id나 이름. 마스크 대신 쓸 수 있음")
+
+
+class SegmentRequest(BaseModel):
+    image_id: str
+    labels: list[str] | None = Field(None, description="찾을 대상 (영어 명사). 비우면 자동으로 찾음")
+    points: list[dict] | None = Field(None, description="클릭한 점 [{x, y}] (이미지 픽셀)")
+    negative_points: list[dict] | None = None
 
 
 def outpaint_pads(w: int, h: int, aspect: str | None, anchor: str = "center", pads: dict | None = None) -> dict:
@@ -111,6 +120,7 @@ class Job:
     message: str = "대기 중"
     decision: dict = field(default_factory=dict)
     result_ids: list[str] = field(default_factory=list)
+    result: dict = field(default_factory=dict)
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -128,6 +138,7 @@ class Engine:
         from .characters import Characters
         self.settings = settings
         self.characters = characters or Characters(settings.output_dir / "characters.json")
+        self.segments = SegmentStore(library)
         self.registry = registry
         self.library = library
         self.comfy = comfy
@@ -203,6 +214,11 @@ class Engine:
         src = self.library.get(req.image_id)
         if not src:
             raise KeyError("편집할 이미지를 찾을 수 없어요")
+        if req.segments and not req.mask_png:
+            if req.mode not in ("inpaint",):
+                req = req.model_copy(update={"mode": "inpaint"})
+            req = req.model_copy(update={"mask_png": base64.b64encode(
+                self.segments.union_mask(req.image_id, req.segments)).decode()})
         if req.mode == "inpaint" and not req.mask_png:
             raise ValueError("다시 그릴 영역(마스크)이 없어요. 브러시로 영역을 칠하거나 세그먼트를 선택하세요.")
         if req.mode == "inpaint" and req.fill == "prompt" and not req.prompt.strip():
@@ -228,6 +244,30 @@ class Engine:
         decision = {"model_id": model.id, "model_name": model.name, "family": model.family.id, "reasons": [why],
                     "action": _action_label(req), **extra}
         job = Job(id=uuid.uuid4().hex[:12], kind="edit", request=req.model_dump(), decision=decision)
+        return self._enqueue(job)
+
+    def vlm_file(self) -> str | None:
+        """Qwen3-VL text encoder that ships with Qwen-Image 2.1 doubles as the image describer."""
+        for fam in self.registry.families.values():
+            if fam.encoder == "qwen21" and fam.clip:
+                spec = next((f for f in fam.files if f.name == fam.clip), None)
+                if spec and spec.installed(self.settings.models_dir) is not False:
+                    return fam.clip
+        return None
+
+    def submit_segment(self, req: SegmentRequest) -> Job:
+        if not self.library.get(req.image_id):
+            raise KeyError("이미지를 찾을 수 없어요")
+        if not self.registry.tool_ready("sam3", self.settings.models_dir):
+            raise ValueError("세그먼트 모델(SAM 3.1)이 없어요. update.bat을 실행해 받아 주세요.")
+        if req.points:
+            action, how = "클릭 선택", "SAM 3"
+        elif req.labels:
+            action, how = "세그먼트 분석", "지정한 대상"
+        else:
+            action, how = "세그먼트 분석", "Qwen3-VL이 대상 찾기" if self.vlm_file() else "기본 단어 목록"
+        job = Job(id=uuid.uuid4().hex[:12], kind="segment", request=req.model_dump(),
+                  decision={"action": action, "labeler": how, "model_name": "SAM 3.1"})
         return self._enqueue(job)
 
     def _enqueue(self, job: Job) -> Job:
@@ -282,6 +322,8 @@ class Engine:
             try:
                 if job.kind == "generate":
                     await self._run_generate(job)
+                elif job.kind == "segment":
+                    await self._run_segment(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -399,6 +441,43 @@ class Engine:
         if mask_bytes:
             self.library.update(rec["id"], mask_file=self.library.save_side_file(rec["id"], ".mask.png", mask_bytes))
         job.result_ids.append(rec["id"])
+
+    async def _run_segment(self, job: Job) -> None:
+        req = SegmentRequest(**job.request)
+        src_path = self.library.path(req.image_id)
+        image_name = await self.comfy.upload_image(src_path.read_bytes(), f"{req.image_id}.png")
+        sam = self.registry.tool_file("sam3")
+        if req.points:
+            graph = workflows.segment_points(image_name, sam, req.points, req.negative_points)
+            outputs = await self.comfy.run_outputs(graph, self._progress(job, 0, 1))
+            masks = [await self.comfy.view(d["filename"], d.get("subfolder", "")) for _n, d in iter_images(outputs)]
+            seg = self.segments.add_click(req.image_id, masks[0]) if masks else None
+            if not seg:
+                raise ComfyError("그 위치에서 물체를 찾지 못했어요. 조금 다른 곳을 눌러 보세요.")
+            job.result = {"segments": self.segments.load(req.image_id), "new": [seg["id"]]}
+            return
+
+        if req.labels:
+            infos = [{"label": l.strip().lower(), "ko": "", "parent": None} for l in req.labels if l.strip()]
+        else:
+            infos = []
+            vlm = self.vlm_file()
+            if vlm:
+                job.message = "무엇이 있는지 살펴보는 중"
+                outputs = await self.comfy.run_outputs(workflows.describe_objects(image_name, vlm, DESCRIBE_PROMPT),
+                                                       self._progress(job, 0, 0.4))
+                infos = parse_labels(output_text(outputs))
+            if not infos:
+                infos = [{"label": a, "ko": b, "parent": c} for a, b, c in FALLBACK_LABELS]
+        graph, saves = workflows.segment_labels(image_name, sam, [i["label"] for i in infos])
+        outputs = await self.comfy.run_outputs(graph, self._progress(job, 0.4, 0.6))
+        per_label: dict[int, list[bytes]] = {}
+        for nid, d in iter_images(outputs):
+            if nid in saves:
+                per_label.setdefault(saves[nid], []).append(await self.comfy.view(d["filename"], d.get("subfolder", "")))
+        detections = [(infos[i], per_label.get(i, [])) for i in range(len(infos))]
+        segs = self.segments.save_detections(req.image_id, detections, "labels" if req.labels else "auto")
+        job.result = {"segments": segs, "labels": [i["label"] for i in infos]}
 
     async def _upload_refs(self, ids: list[str]) -> list[str]:
         names = []

@@ -218,7 +218,10 @@ const Editor = (() => {
   const view = $('#editView'), img = $('#edImg'), cv = $('#mask'), cx = cv.getContext('2d');
   const area = $('#area'), frame = $('#frame'), imgbox = $('#imgbox'), rail = $('#rail'), pane = $('#pane');
   const promptEl = $('#edPrompt'), form = $('#edForm'), routeEl = $('#edRoute');
-  let rec = null, versions = [], tool = 'brush', zoom = 1, painted = false, pending = false, busy = null;
+  let rec = null, versions = [], tool = store.get('tool', 'seg'), zoom = 1, painted = false, pending = false, busy = null;
+  let segs = [], segSel = [], segHover = null, segState = 'idle', segHits = {}, segOpen = {};   // segState: idle|running|done|none
+  const segLayer = $('#segLayer');
+  const hasSel = () => painted || segSel.length > 0;
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
   const STRENGTH = {low: [0.35, '약하게'], mid: [0.55, '보통'], high: [0.75, '강하게']};
@@ -243,7 +246,9 @@ const Editor = (() => {
     img.src = imgUrl(rec.id, Math.round(rec.created_at));
     $('#saveBtn').href = `/api/images/${rec.id}/file?download=1`;
     $('#regenBtn').disabled = rec.kind === 'import';
+    segs = []; segSel = []; segHover = null; segState = 'idle'; segHits = {}; paintSegLayer();
     paintRail(); paintPane(); paintRoute();
+    loadSegments(true);
   }
 
   function paintRail() {
@@ -255,9 +260,7 @@ const Editor = (() => {
   function paintPane() {
     let h = '';
     if (tool === 'seg') {
-      h = `<h2>세그먼트 <span class="badge">곧 추가</span></h2>
-        <p class="note">사람, 머리카락, 옷 같은 부분을 자동으로 나눠서 목록으로 보여주는 기능은 지금 만드는 중입니다. 그전까지는 <b>브러시</b>로 바꿀 부분을 칠하세요.</p>
-        <div class="seg2"><button data-goto="brush" aria-pressed="true">브러시로 칠하기</button></div>`;
+      h = segPaneHtml();
     } else if (tool === 'brush') {
       h = `<h2>마스크 브러시</h2>
         <p class="note">바꿀 부분을 칠한 뒤 아래에 무엇으로 바꿀지 입력하세요. 칠한 부분만 다시 그리고 나머지는 그대로 둡니다.</p>
@@ -293,10 +296,18 @@ const Editor = (() => {
     }
     pane.innerHTML = h;
   }
+  pane.addEventListener('pointerover', e => { const r = e.target.closest('[data-skey]'); const k = r ? r.dataset.skey : null; if (k !== segHover) { segHover = k; paintSegLayer(); } });
+  pane.addEventListener('pointerleave', () => { if (segHover) { segHover = null; paintSegLayer(); } });
+  pane.addEventListener('keydown', e => { if (e.target.id === 'segFind' && e.key === 'Enter') { e.preventDefault(); $('#findSeg').click(); } });
   pane.addEventListener('input', e => { if (e.target.id === 'bSize') { brushSize = +e.target.value; $('#bSizeV').textContent = brushSize; store.set('brush', brushSize); } });
   pane.addEventListener('change', e => { if (e.target.id === 'autoFillToggle') setAutoFill(e.target.checked); });
   pane.addEventListener('click', e => {
     const g = e.target.closest('[data-goto]'); if (g) setTool(g.dataset.goto);
+    const sd = e.target.closest('[data-sdel]'); if (sd) { selectSeg(sd.dataset.sdel, false); startDelete(); return; }
+    const chev = e.target.closest('[data-sopen]'); if (chev) { segOpen[chev.dataset.sopen] = !segOpen[chev.dataset.sopen]; paintPane(); return; }
+    const sr = e.target.closest('[data-skey]'); if (sr) { selectSeg(sr.dataset.skey, e.shiftKey || e.ctrlKey || e.metaKey); return; }
+    if (e.target.closest('#reSeg')) { analyze(true); return; }
+    if (e.target.closest('#findSeg')) { const v = $('#segFind').value.trim(); if (v) analyze(true, v.split(',').map(x => x.trim()).filter(Boolean)); return; }
     const bm = e.target.closest('[data-bm]'); if (bm) { erasing = bm.dataset.bm === 'erase'; paintPane(); }
     if (e.target.closest('#bClear')) clearMask();
     if (e.target.closest('#bDelete')) startDelete();
@@ -321,9 +332,130 @@ const Editor = (() => {
     tool = t;
     document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === t));
     view.classList.toggle('tool-brush', t === 'brush');
+    view.classList.toggle('tool-seg', t === 'seg');
+    store.set('tool', t);
     paintPane();
+    if (t === 'seg' && rec && segState === 'idle') analyze();
   }
   document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+  setTimeout(() => setTool(tool), 0);
+
+  /* ------------ segments */
+  const ICON_DL = '<svg class="i" viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>';
+  const ICON_DEL = '<svg class="i" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>';
+  function segRows() {
+    // groups: several instances of one label share a row that expands into each instance
+    const rows = [], seen = new Set();
+    for (const s of segs) {
+      if (s.group) {
+        if (seen.has(s.group)) continue;
+        seen.add(s.group);
+        rows.push({key: s.group, label: s.label, ko: s.ko, members: segs.filter(x => x.group === s.group), group: true});
+      } else rows.push({key: s.id, label: s.label, ko: s.ko, members: [s]});
+    }
+    return rows;
+  }
+  const keyIds = k => { const r = segRows().find(x => x.key === k); return r ? r.members.map(m => m.id) : segs.filter(s => s.id === k).map(s => s.id); };
+  function segPaneHtml() {
+    if (!rec) return '';
+    if (segState === 'running') return `<h2>세그먼트</h2><p class="note">이미지를 분석하는 중이에요… 사람, 머리카락, 옷 같은 부분을 찾고 있어요.</p><i class="bar" style="--p:${segProgress}%"></i>`;
+    if (segState === 'missing') return `<h2>세그먼트</h2><p class="note">${esc(segError)}</p><div class="seg2"><button data-goto="brush" aria-pressed="true">브러시로 칠하기</button></div>`;
+    const row = (r, child) => `<li><button class="srow ${segSel.includes(r.key) ? 'on' : ''}" data-skey="${esc(r.key)}">
+        <span class="sthumb"><img src="/api/images/${rec.id}/segments/${encodeURIComponent(r.key)}/cutout?size=96" alt=""></span>
+        <span class="lbl"><b>${esc(r.ko || r.label)}${r.group ? ` <small>(${r.members.length})</small>` : ''}</b>${r.ko ? `<small>${esc(r.label)}</small>` : ''}</span>
+        ${r.group ? `<span class="hint" data-sopen="${esc(r.key)}" style="padding:6px">${segOpen[r.key] ? '▲' : '▼'}</span>` : ''}</button>
+        ${child ? '' : `<button class="sdel" data-sdel="${esc(r.key)}" title="삭제" aria-label="${esc(r.ko || r.label)} 삭제">${ICON_DEL}</button>`}
+        ${r.group && segOpen[r.key] ? `<ul>${r.members.map((m, i) => row({key: m.id, label: m.label, ko: `${m.ko || m.label} ${i + 1}`, members: [m]}, true)).join('')}</ul>` : ''}</li>`;
+    const list = segRows();
+    return `<h2>세그먼트 <span style="display:flex;gap:6px"><button class="ghost" id="reSeg" title="다시 분석">↻</button>${list.length ? `<a class="ghost" href="/api/images/${rec.id}/segments.zip" download>${ICON_DL}모두 다운로드</a>` : ''}</span></h2>
+      ${list.length ? `<ul class="segs">${list.map(r => row(r)).join('')}</ul>` : '<p class="note">찾은 부분이 없어요. 이미지를 직접 클릭하거나, 아래에 찾을 대상을 입력해 보세요.</p>'}
+      <p class="note" style="margin-top:12px">목록에 없는 부분은 <b>이미지를 클릭</b>하면 잡아요. 여러 개는 Shift를 누른 채 고르세요.</p>
+      <div class="field"><div class="inline"><input id="segFind" placeholder="찾을 대상 (영어, 예: epaulets, necklace)"><button class="btn" id="findSeg">찾기</button></div></div>`;
+  }
+  let segProgress = 0, segError = '';
+  async function loadSegments(autoRun) {
+    if (!rec) return;
+    const id = rec.id;
+    try { segs = await api.get(`/api/images/${id}/segments`); } catch { segs = []; }
+    if (!rec || rec.id !== id) return;
+    segState = segs.length ? 'done' : 'idle';
+    prepareHits(); paintPane(); paintSegLayer();
+    if (autoRun && !segs.length && tool === 'seg') analyze();
+  }
+  async function analyze(force = false, labels = null, points = null) {
+    if (!rec || segState === 'running') return;
+    const id = rec.id;
+    segState = 'running'; segProgress = 0; if (tool === 'seg') paintPane();
+    try {
+      const j = await api.post(`/api/images/${id}/segment`, {labels, points});
+      const done = await pollJob(j.id, x => { segProgress = Math.round(x.progress * 100); const b = pane.querySelector('.bar'); if (b) b.style.setProperty('--p', segProgress + '%'); });
+      if (!rec || rec.id !== id) return;
+      if (done.status !== 'done') { segState = segs.length ? 'done' : 'idle'; toast(done.error || '세그먼트를 찾지 못했어요', 5000); }
+      else {
+        segs = done.result.segments || [];
+        segState = 'done';
+        if (done.result.new) { segSel = done.result.new; if (painted) clearMask(false); }
+      }
+    } catch (e) {
+      segState = 'missing'; segError = e.message;
+    }
+    prepareHits(); paintPane(); paintSegLayer(); paintRoute();
+  }
+  function prepareHits() {
+    segHits = {};
+    for (const s of segs) {
+      const im = new Image();
+      im.onload = () => { const c = document.createElement('canvas'); c.width = 160; c.height = Math.round(160 * im.height / im.width); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); segHits[s.id] = c; };
+      im.src = `/api/images/${rec.id}/segments/${s.id}/mask`;
+    }
+  }
+  function segAt(fx, fy) {
+    // smallest segment under the point wins (hair before woman)
+    let best = null;
+    for (const s of segs) {
+      const c = segHits[s.id]; if (!c) continue;
+      const a = c.getContext('2d').getImageData(Math.min(c.width - 1, fx * c.width | 0), Math.min(c.height - 1, fy * c.height | 0), 1, 1).data[3];
+      if (a > 127 && (!best || s.area < best.area)) best = s;
+    }
+    return best;
+  }
+  function keyFor(s) { return s.group ? s.group : s.id; }
+  function selectSeg(key, add) {
+    if (painted) clearMask(false);
+    if (add) segSel = segSel.includes(key) ? segSel.filter(k => k !== key) : [...segSel, key];
+    else segSel = segSel.length === 1 && segSel[0] === key ? [] : [key];
+    pending = false;
+    paintPane(); paintSegLayer(); paintRoute();
+  }
+  function paintSegLayer() {
+    if (!rec) { segLayer.innerHTML = ''; return; }
+    const ov = (sid, cls) => `<div class="seg-ov ${cls}" style="-webkit-mask-image:url('/api/images/${rec.id}/segments/${sid}/mask');mask-image:url('/api/images/${rec.id}/segments/${sid}/mask')"></div>`;
+    let h = '';
+    for (const k of segSel) for (const id of keyIds(k)) h += ov(id, 'sel');
+    if (segHover && !segSel.includes(segHover)) for (const id of keyIds(segHover)) h += ov(id, '');
+    segLayer.innerHTML = h;
+  }
+  imgbox.addEventListener('click', e => {
+    if (tool !== 'seg' || busy || !rec || e.target.closest('.busy')) return;
+    const r = img.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+    const hit = segAt(fx, fy);
+    if (hit) { selectSeg(keyFor(hit), e.shiftKey || e.ctrlKey || e.metaKey); return; }
+    analyze(true, null, [{x: Math.round(fx * rec.width), y: Math.round(fy * rec.height)}]);
+  });
+  imgbox.addEventListener('pointermove', e => {
+    if (tool !== 'seg' || !segs.length) return;
+    const r = img.getBoundingClientRect();
+    const hit = segAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+    const k = hit ? keyFor(hit) : null;
+    if (k !== segHover) { segHover = k; paintSegLayer(); pane.querySelectorAll('[data-skey]').forEach(x => x.classList.toggle('hl', x.dataset.skey === k)); }
+  });
+  imgbox.addEventListener('pointerleave', () => { if (segHover) { segHover = null; paintSegLayer(); } });
+  const selName = () => {
+    if (painted) return '칠한 영역';
+    const names = segSel.map(k => { const r = segRows().find(x => x.key === k); const s = segs.find(x => x.id === k); return (r && (r.ko || r.label)) || (s && (s.ko || s.label)) || k; });
+    return names.join(', ');
+  };
 
   /* ------------ prompt / routing */
   const SUG_MASK = ['지워줘', '빨간색으로', '검은 가죽 재킷'];
@@ -333,14 +465,14 @@ const Editor = (() => {
     const modelName = model?.name || '기본 실사 모델';
     let h = '';
     if (pending) {
-      h = `<div class="ask"><b>칠한 부분 삭제 · 그 자리를 어떻게 채울까요? 아래에 입력하거나 골라 주세요.</b>
+      h = `<div class="ask"><b>${esc(selName())} 삭제 · 그 자리를 어떻게 채울까요? 아래에 입력하거나 골라 주세요.</b>
         <div class="opts"><button type="button" class="pill main" data-fill="auto">모델이 알아서 채우기</button>
         <button type="button" class="pill plain" data-fill="clear">비워두기 (배경으로 메우기)</button>
         <button type="button" class="pill sug" data-cancel-ask>삭제 취소</button></div>
         <label class="switch"><input type="checkbox" id="askDefault" ${autoFill ? 'checked' : ''}><span>앞으로는 묻지 않고 항상 모델이 알아서 채우기</span></label>
         ${t ? `<span class="pill auto">→ <b>삭제한 자리 다시 그리기</b> · ${esc(modelName)}</span>` : ''}</div>`;
-    } else if (painted) {
-      h += `<span class="pill sel">@칠한 영역<button type="button" data-clear-mask aria-label="칠한 영역 지우기"><svg class="i" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>`;
+    } else if (hasSel()) {
+      h += `<span class="pill sel">@${esc(selName())}<button type="button" data-clear-mask aria-label="칠한 영역 지우기"><svg class="i" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>`;
       if (!t) h += SUG_MASK.map(s => `<button type="button" class="pill sug" data-sug="${s}">${s}</button>`).join('');
       else if (REMOVE.test(t)) h += `<span class="pill auto">→ <b>삭제</b> 후 채울 내용을 물어봅니다</span>`;
       else h += `<span class="pill auto">자동 선택 → <b>부분 다시 그리기</b> · ${esc(modelName)} <span class="hint">(원본과 같은 모델)</span></span>`;
@@ -353,12 +485,12 @@ const Editor = (() => {
       h = `<span class="hint">바꿀 부분을 브러시로 칠하세요. 칠하지 않고 "배경을 우주선 함교로"처럼 입력하면 문장대로 편집합니다.</span>`;
     }
     routeEl.innerHTML = h;
-    promptEl.placeholder = pending ? '삭제한 자리에 무엇을 그릴지 입력하세요' : (painted ? '칠한 부분을 무엇으로 바꿀까요?' : '바꿀 부분을 브러시로 칠하고 무엇으로 바꿀지 입력하세요');
+    promptEl.placeholder = pending ? '삭제한 자리에 무엇을 그릴지 입력하세요' : (hasSel() ? `${selName()}을(를) 무엇으로 바꿀까요?` : '바꿀 부분을 고르거나 칠하고, 무엇으로 바꿀지 입력하세요');
   }
   routeEl.addEventListener('click', e => {
     const f = e.target.closest('[data-fill]'); if (f) { submitEdit({mode: 'inpaint', fill: f.dataset.fill}); return; }
     if (e.target.closest('[data-cancel-ask]')) { pending = false; paintRoute(); toast('삭제를 취소했어요'); return; }
-    if (e.target.closest('[data-clear-mask]')) { clearMask(); return; }
+    if (e.target.closest('[data-clear-mask]')) { segSel = []; paintSegLayer(); clearMask(); return; }
     const s = e.target.closest('[data-sug]'); if (s) { promptEl.value = s.dataset.sug; paintRoute(); promptEl.focus(); return; }
     const st = e.target.closest('[data-strength]'); if (st) { strength = st.dataset.strength; store.set('strength', strength); paintRoute(); }
     const em = e.target.closest('[data-emode]'); if (em) { editMode = em.dataset.emode; store.set('editMode', editMode); paintRoute(); }
@@ -366,7 +498,7 @@ const Editor = (() => {
   routeEl.addEventListener('change', e => { if (e.target.id === 'askDefault') setAutoFill(e.target.checked); });
 
   function startDelete() {
-    if (!painted) { toast('삭제할 부분을 먼저 브러시로 칠하세요'); return; }
+    if (!hasSel()) { toast('삭제할 부분을 먼저 고르거나 브러시로 칠하세요'); return; }
     promptEl.value = '';
     if (autoFill) { submitEdit({mode: 'inpaint', fill: 'auto'}); return; }
     pending = true; paintRoute(); promptEl.focus();
@@ -376,8 +508,8 @@ const Editor = (() => {
     e.preventDefault();
     const t = promptEl.value.trim();
     if (pending) { if (t) submitEdit({mode: 'inpaint', fill: 'prompt', prompt: t}); return; }
-    if (painted && REMOVE.test(t) && t.length <= 12) { startDelete(); return; }
-    if (painted) { if (t) submitEdit({mode: 'inpaint', fill: 'prompt', prompt: t}); else promptEl.focus(); return; }
+    if (hasSel() && REMOVE.test(t) && t.length <= 12) { startDelete(); return; }
+    if (hasSel()) { if (t) submitEdit({mode: 'inpaint', fill: 'prompt', prompt: t}); else promptEl.focus(); return; }
     if (t && qwenReady() && editMode === 'instruction') submitEdit({mode: 'reference', prompt: t});
     else if (t) submitEdit({mode: 'variation', prompt: t, denoise: STRENGTH[strength][0]});
   });
@@ -386,7 +518,10 @@ const Editor = (() => {
     if (busy || !rec) return;
     const body = {image_id: rec.id, prompt: opts.prompt || '', mode: opts.mode, fill: opts.fill || 'prompt', denoise: opts.denoise ?? null,
                   aspect: opts.aspect || null, anchor: opts.anchor || 'center'};
-    if (opts.mode === 'inpaint') body.mask_png = cv.toDataURL('image/png');
+    if (opts.mode === 'inpaint') {
+      if (painted) body.mask_png = cv.toDataURL('image/png');
+      else body.segments = segSel.flatMap(keyIds);
+    }
     try {
       const j = await api.post('/api/edit', body);
       await runJob(j, `${j.decision.action} · ${j.decision.model_name}`);
@@ -400,7 +535,7 @@ const Editor = (() => {
     try {
       const done = await pollJob(j.id, x => { ov.querySelector('.bar').style.setProperty('--p', Math.round(x.progress * 100) + '%'); ov.querySelector('.m').textContent = x.status === 'queued' && x.queue_position > 1 ? `앞에 ${x.queue_position - 1}개 대기 중` : x.message; });
       if (done.status === 'done') {
-        pending = false; promptEl.value = ''; autoGrow(promptEl); clearMask(false);
+        pending = false; promptEl.value = ''; autoGrow(promptEl); clearMask(false); segSel = [];
         location.hash = 'edit=' + done.result_ids[0];
       } else if (done.status === 'error') toast('실패: ' + done.error, 7000);
       else toast('취소했어요');
@@ -420,7 +555,7 @@ const Editor = (() => {
     else { cx.arc(x, y, brushSize * k / 2, 0, Math.PI * 2); cx.fill(); }
     last = [x, y];
   }
-  cv.addEventListener('pointerdown', e => { if (tool !== 'brush' || busy) return; drawing = true; last = null; cv.setPointerCapture(e.pointerId); stroke(e); });
+  cv.addEventListener('pointerdown', e => { if (tool !== 'brush' || busy) return; if (segSel.length) { segSel = []; paintSegLayer(); } drawing = true; last = null; cv.setPointerCapture(e.pointerId); stroke(e); });
   cv.addEventListener('pointermove', e => { if (drawing) stroke(e); });
   const endStroke = () => { if (!drawing) return; drawing = false; last = null; const was = painted; painted = hasPaint(); if (was !== painted) { paintRoute(); if (tool === 'brush') paintPane(); } };
   cv.addEventListener('pointerup', endStroke); cv.addEventListener('pointercancel', endStroke);
@@ -478,7 +613,8 @@ const Editor = (() => {
     if (view.hidden) return;
     if (e.key === 'Escape' && pending) { pending = false; paintRoute(); return; }
     if (e.target === promptEl) return;
-    if ((e.key === 'Delete' || e.key === 'Backspace') && painted && !pending) { e.preventDefault(); startDelete(); }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && hasSel() && !pending) { e.preventDefault(); startDelete(); }
+    if (e.key === 'Escape' && segSel.length) { segSel = []; paintSegLayer(); paintPane(); paintRoute(); }
     if (e.key === '[') { brushSize = Math.max(6, brushSize - 6); paintPane(); }
     if (e.key === ']') { brushSize = Math.min(160, brushSize + 6); paintPane(); }
   });

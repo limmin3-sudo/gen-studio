@@ -98,6 +98,14 @@ class ComfyClient:
     # ------------------------------------------------------------------ run
     async def run(self, graph: dict, on_progress: ProgressFn | None = None, timeout: float = 1800) -> list[dict]:
         """Queue a graph, wait for it, and return the output image descriptors."""
+        outputs = await self.run_outputs(graph, on_progress, timeout)
+        images = [img for _nid, img in iter_images(outputs)]
+        if not images:
+            raise ComfyError("생성은 끝났지만 저장된 이미지가 없어요")
+        return images
+
+    async def run_outputs(self, graph: dict, on_progress: ProgressFn | None = None, timeout: float = 1800) -> dict:
+        """Queue a graph, wait for it, and return ComfyUI's per-node outputs (images, text ...)."""
         ws = None
         if self.use_websocket:
             try:
@@ -122,15 +130,7 @@ class ComfyClient:
         status = h.get("status") or {}
         if status.get("status_str") == "error":
             raise ComfyError(_history_error(h))
-        images = []
-        for node_out in (h.get("outputs") or {}).values():
-            for key in ("images", "gifs", "videos"):
-                for item in node_out.get(key, []) or []:
-                    if isinstance(item, dict) and item.get("filename") and item.get("type", "output") == "output":
-                        images.append(item)
-        if not images:
-            raise ComfyError("생성은 끝났지만 저장된 이미지가 없어요")
-        return images
+        return h.get("outputs") or {}
 
     async def _wait_ws(self, ws, pid: str, on_progress: ProgressFn | None, timeout: float) -> None:
         deadline = time.monotonic() + timeout
@@ -175,6 +175,23 @@ class ComfyClient:
                 return
             await asyncio.sleep(0.5)
         raise ComfyError("시간 초과: 생성이 너무 오래 걸려요")
+
+
+def iter_images(outputs: dict):
+    """(node_id, image descriptor) for every saved output image, in node order."""
+    for nid in sorted(outputs, key=lambda k: int(k) if str(k).isdigit() else 0):
+        for key in ("images", "gifs", "videos"):
+            for item in outputs[nid].get(key, []) or []:
+                if isinstance(item, dict) and item.get("filename") and item.get("type", "output") == "output":
+                    yield nid, item
+
+
+def output_text(outputs: dict) -> str:
+    for nid in outputs:
+        t = outputs[nid].get("text")
+        if t:
+            return t[0] if isinstance(t, list) else str(t)
+    return ""
 
 
 def _history_error(h: dict) -> str:

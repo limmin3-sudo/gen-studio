@@ -150,8 +150,14 @@ class Library:
         if not rec:
             return False
         p = self.root / rec["file"]
-        for f in (p, p.with_suffix(".json"), p.with_suffix(".mask.png"), self.root / ".thumbs" / f"{iid}.jpg"):
+        for f in (p, p.with_suffix(".json"), p.with_suffix(".mask.png"), p.with_suffix(".segments.json"),
+                  self.root / ".thumbs" / f"{iid}.jpg"):
             f.unlink(missing_ok=True)
+        seg_dir = p.with_suffix(".segments")
+        if seg_dir.is_dir():
+            for f in seg_dir.glob("*.png"):
+                f.unlink()
+            seg_dir.rmdir()
         return True
 
     # ------------------------------------------------------------- read

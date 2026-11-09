@@ -225,6 +225,52 @@ def reference(model: ModelSpec, image_names: list[str], prompt: str, negative: s
     return g.nodes, {"final_prompt": text}
 
 
+# ------------------------------------------------------------------ segmentation
+def describe_objects(image_name: str, vlm_file: str, instruction: str, max_length: int = 600) -> dict:
+    """Ask a vision-language model (Qwen3-VL) what is in the picture. Result text lands in a PreviewAny output."""
+    g = Graph()
+    img = out(g.add("LoadImage", image=image_name))
+    clip = out(g.add("CLIPLoader", clip_name=vlm_file, type="stable_diffusion", device="default"))
+    txt = g.add("TextGenerateV2", clip=clip, prompt=instruction, **{"images.image1": img}, max_length=max_length,
+                sampling_mode="off", thinking=False)
+    g.add("PreviewAny", source=out(txt, 0))
+    return g.nodes
+
+
+def segment_labels(image_name: str, sam_file: str, labels: list[str], threshold: float = 0.4,
+                   prefix: str = "gen-studio/seg") -> tuple[dict, dict[str, int]]:
+    """One SAM 3 text query per label. Returns the graph and {SaveImage node id: label index}."""
+    g = Graph()
+    ck = g.add("CheckpointLoaderSimple", ckpt_name=sam_file)
+    img = out(g.add("LoadImage", image=image_name))
+    saves: dict[str, int] = {}
+    for i, label in enumerate(labels):
+        enc = g.add("CLIPTextEncode", text=label, clip=out(ck, 1))
+        det = g.add("SAM3_Detect", model=out(ck, 0), image=img, conditioning=out(enc), threshold=float(threshold),
+                    refine_iterations=2, individual_masks=True)
+        m = g.add("MaskToImage", mask=out(det, 0))
+        saves[g.add("SaveImage", filename_prefix=f"{prefix}/{i}", images=out(m))] = i
+    return g.nodes, saves
+
+
+def segment_points(image_name: str, sam_file: str, positive: list[dict], negative: list[dict] | None = None,
+                   prefix: str = "gen-studio/seg") -> dict:
+    """SAM 3 click selection: positive/negative points in image pixels."""
+    import json as _json
+    g = Graph()
+    ck = g.add("CheckpointLoaderSimple", ckpt_name=sam_file)
+    img = out(g.add("LoadImage", image=image_name))
+    pos = out(g.add("PrimitiveString", value=_json.dumps(positive)))
+    kw = {}
+    if negative:
+        kw["negative_coords"] = out(g.add("PrimitiveString", value=_json.dumps(negative)))
+    det = g.add("SAM3_Detect", model=out(ck, 0), image=img, positive_coords=pos, threshold=0.5,
+                refine_iterations=2, individual_masks=False, **kw)
+    m = g.add("MaskToImage", mask=out(det, 0))
+    g.add("SaveImage", filename_prefix=f"{prefix}/click", images=out(m))
+    return g.nodes
+
+
 REQUIRED_NODES = sorted({
     "UNETLoader", "CLIPLoader", "VAELoader", "CheckpointLoaderSimple", "ModelSamplingAuraFlow", "CLIPSetLastLayer",
     "CLIPTextEncode", "ConditioningZeroOut", "EmptySD3LatentImage", "EmptyLatentImage", "KSampler", "VAEDecode",
@@ -237,4 +283,6 @@ REQUIRED_NODES = sorted({
     "ModelSamplingSD3", "LoraLoaderModelOnly", "KSamplerAdvanced", "EmptyHunyuanLatentVideo",
     # canvas extension
     "ImagePadForOutpaint",
+    # segmentation
+    "SAM3_Detect", "MaskToImage", "PrimitiveString", "TextGenerateV2", "PreviewAny",
 })
