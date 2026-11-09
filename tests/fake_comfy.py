@@ -28,6 +28,13 @@ class FakeComfy:
                       ' {"label": "unicorn", "ko": "유니콘", "parent": null},'
                       ' {"label": "background", "ko": "배경", "parent": null}]\n```')
 
+    @staticmethod
+    def translate_reply(instruction: str) -> str:
+        """Fake Qwen3-VL rewrite: tags for Illustrious, a sentence otherwise."""
+        if "Danbooru" in instruction:
+            return "1girl, solo, silver hair, white shirt, cafe, window light"
+        return "Prompt: A woman sitting by a window in soft natural light."
+
     def _is_mask(self, graph: dict, save_id: str) -> bool:
         src = graph[save_id]["inputs"]["images"][0]
         return graph[src]["class_type"] == "MaskToImage"
@@ -123,7 +130,9 @@ class FakeComfy:
                     outputs[nid] = {"images": [{"filename": f"{pid}_{nid}_{j}.png", "subfolder": "gen-studio", "type": "output"}
                                                for j in range(k)]}
                 if n["class_type"] == "PreviewAny":
-                    outputs[nid] = {"text": [self.describe_reply]}
+                    gen = graph[n["inputs"]["source"][0]]["inputs"]
+                    reply = self.describe_reply if "images.image1" in gen else self.translate_reply(gen["prompt"])
+                    outputs[nid] = {"text": [reply]}
             return httpx.Response(200, json={pid: {"outputs": outputs, "status": {"status_str": "success", "completed": True}}})
         if path == "/view":
             pid, nid, j = request.url.params["filename"].removesuffix(".png").rsplit("_", 2)

@@ -26,3 +26,6 @@ gpu:
 generation:
   # 스타일이 문장에서 드러나지 않을 때 쓸 기본값: realistic(실사) / semi(반실사)
   default_style: "realistic"
+  # 한국어 프롬프트 자동 번역 (Qwen3-VL 사용, 추가 다운로드 없음)
+  # auto: 영어가 필요한 모델(반실사 Illustrious, Wan)에만 번역 / always: 항상 / never: 끄기
+  translate: "auto"

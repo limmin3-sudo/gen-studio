@@ -146,3 +146,25 @@ def test_recommendations_per_task(client):
     j = wait_job(client, client.post("/api/generate", json={"prompt": "반실사 여자"}).json()["id"])
     r = client.post("/api/recommend", json={"task": "inpaint", "image_id": j["result_ids"][0]}).json()
     assert r["recommended"] == "realism-illustrious" and "그림체" in r["reason"]
+
+
+def test_korean_prompts_are_rewritten_for_models_that_need_english(client, fake):
+    # Illustrious (semi-real) gets English tags
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "반실사 은발 여자, 카페 창가"}).json()["id"])
+    g = last_graph(fake)
+    assert nodes(g, "CLIPTextEncode")[0]["text"].endswith("1girl, solo, silver hair, white shirt, cafe, window light")
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert rec["prompt"] == "반실사 은발 여자, 카페 창가" and rec["prompt_en"].startswith("1girl")
+    assert j["result"]["translated"][0]["from"] == "반실사 은발 여자, 카페 창가"
+    # Z-Image understands Korean: left alone on auto, rewritten when asked
+    wait_job(client, client.post("/api/generate", json={"prompt": "창가에 앉은 여자"}).json()["id"])
+    assert nodes(last_graph(fake), "CLIPTextEncode")[0]["text"] == "창가에 앉은 여자"
+    wait_job(client, client.post("/api/generate", json={"prompt": "창가에 앉은 여자", "translate": True}).json()["id"])
+    assert nodes(last_graph(fake), "CLIPTextEncode")[0]["text"] == "A woman sitting by a window in soft natural light."
+    # English stays as typed
+    wait_job(client, client.post("/api/generate", json={"prompt": "semi-realistic girl", "style": "semi"}).json()["id"])
+    assert nodes(last_graph(fake), "CLIPTextEncode")[0]["text"].endswith("semi-realistic girl")
+    # edits: the redraw prompt is rewritten, history keeps the Korean
+    e = wait_job(client, client.post("/api/edit", json={"image_id": rec["id"], "mode": "variation", "prompt": "노을 지는 배경"}).json()["id"])
+    er = client.get(f"/api/images/{e['result_ids'][0]}").json()
+    assert er["edit_prompt"] == "노을 지는 배경" and er["edit_prompt_en"].startswith("1girl") and er["label"].endswith("노을 지는 배경")

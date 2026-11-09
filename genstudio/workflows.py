@@ -243,6 +243,15 @@ def describe_objects(image_name: str, vlm_file: str, instruction: str, max_lengt
     return g.nodes
 
 
+def rewrite_text(vlm_file: str, instruction: str, max_length: int = 400) -> dict:
+    """Text-only generation with Qwen3-VL (used to turn Korean requests into English prompts)."""
+    g = Graph()
+    clip = out(g.add("CLIPLoader", clip_name=vlm_file, type="stable_diffusion", device="default"))
+    txt = g.add("TextGenerateV2", clip=clip, prompt=instruction, max_length=max_length, sampling_mode="off", thinking=False)
+    g.add("PreviewAny", source=out(txt, 0))
+    return g.nodes
+
+
 def segment_labels(image_name: str, sam_file: str, labels: list[str], threshold: float = 0.4,
                    prefix: str = "gen-studio/seg") -> tuple[dict, dict[str, int]]:
     """One SAM 3 text query per label. Returns the graph and {SaveImage node id: label index}."""

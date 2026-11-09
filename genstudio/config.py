@@ -32,6 +32,7 @@ class Settings:
     output_dir: Path = field(default_factory=lambda: ROOT / "outputs")
     vram_gb: float = 16
     default_style: str = "realistic"
+    translate: str = "auto"      # auto: translate Korean for models that need English | always | never
 
     @property
     def models_dir(self) -> Path | None:
@@ -53,6 +54,7 @@ def load_settings(path: Path | None = None) -> Settings:
         output_dir=_resolve(raw.get("output_dir", "outputs")) or ROOT / "outputs",
         vram_gb=float((raw.get("gpu") or {}).get("vram_gb", 16)),
         default_style=str((raw.get("generation") or {}).get("default_style", "realistic")),
+        translate=str((raw.get("generation") or {}).get("translate", "auto")),
     )
     # environment overrides (handy for tests and one-off runs)
     env = os.environ

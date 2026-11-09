@@ -379,7 +379,9 @@ const Editor = (() => {
       const model = MODELS.find(m => m.id === rec.model_id);
       h += `<h2>정보</h2><dl class="kv">
         ${rec.prompt ? `<dt>프롬프트</dt><dd>${esc(rec.prompt)}</dd>` : ''}
+        ${rec.prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.prompt_en)}</dd>` : ''}
         ${rec.edit_prompt ? `<dt>편집</dt><dd>${esc(rec.edit_prompt)}</dd>` : ''}
+        ${rec.edit_prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.edit_prompt_en)}</dd>` : ''}
         <dt>모델</dt><dd>${esc(model?.name || rec.model_id || (rec.embedded?.tool ? rec.embedded.tool + ' (외부)' : '외부 이미지'))}</dd>
         <dt>크기</dt><dd>${rec.width}×${rec.height}</dd>
         ${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}

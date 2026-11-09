@@ -39,6 +39,7 @@ class GenerateRequest(BaseModel):
     character: str | None = Field(None, description="등록한 캐릭터 이름 또는 id")
     references: list[str] = Field(default_factory=list, description="참고 이미지 id (최대 10장)")
     loras: list[dict] = Field(default_factory=list, description="[{name, strength}] 적용할 LoRA")
+    translate: bool | None = Field(None, description="한국어 자동 번역 (비우면 설정값)")
 
 
 ASPECTS = {"1:1": 1.0, "4:5": 0.8, "3:4": 0.75, "2:3": 2 / 3, "9:16": 9 / 16, "5:4": 1.25, "4:3": 4 / 3,
@@ -67,6 +68,7 @@ class EditRequest(BaseModel):
     pads: dict[str, int] | None = None
     segments: list[str] = Field(default_factory=list, description="세그먼트 id나 이름. 마스크 대신 쓸 수 있음")
     loras: list[dict] = Field(default_factory=list, description="[{name, strength}] 적용할 LoRA")
+    translate: bool | None = None
 
 
 class SegmentRequest(BaseModel):
@@ -435,6 +437,8 @@ class Engine:
         model = self.registry.get(job.decision["model_id"])
         prompt, neg_inline = router.split_negative(req.prompt)
         negative = ", ".join(x for x in (req.negative, neg_inline) if x)
+        prompt_ko = prompt
+        prompt = await self._maybe_translate(job, prompt, model.family.id, req.translate)
         await self._switch_family(model.family.id)
         ref_names = await self._upload_refs(job.decision.get("ref_ids") or [])
         loras = job.decision.get("loras") or []
@@ -457,7 +461,8 @@ class Engine:
             outs = await self.comfy.run(graph, self._progress(job, i / n, 1 / n))
             data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
             rec = self.library.add(data, {
-                "kind": "generate", "source": "gen-studio", "prompt": prompt, "negative": negative,
+                "kind": "generate", "source": "gen-studio", "prompt": prompt_ko, "prompt_en": prompt if prompt != prompt_ko else None,
+                "negative": negative,
                 "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id,
                 "style": job.decision["style"], "seed": seed, "steps": req.steps or model.family.steps,
                 "cfg": req.cfg if req.cfg is not None else model.family.cfg, "label": "원본",
@@ -477,7 +482,11 @@ class Engine:
         seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
         image_name = await self.comfy.upload_image(src_path.read_bytes(), f"{src['id']}.png")
 
-        base_prompt = src.get("prompt", "") or ""
+        base_prompt = src.get("prompt_en") or src.get("prompt", "") or ""
+        req0 = req                              # what the user typed, for labels and history
+        if req.mode != "reference" and req.prompt.strip():
+            req = req.model_copy(update={"prompt": await self._maybe_translate(job, req.prompt.strip(), model.family.id,
+                                                                               req.translate)})
         loras = job.decision.get("loras") or []
         lw = {"loras": loras} if loras else {}
         if req.mode == "inpaint":
@@ -516,16 +525,35 @@ class Engine:
         rec = self.library.add(data, {
             "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             "kind": "edit", "source": src.get("source", "gen-studio"), "parent_id": src["id"],
-            "prompt": base_prompt if req.mode in ("inpaint", "reference", "outpaint") else prompt, "edit_prompt": req.prompt,
+            "prompt": src.get("prompt", "") if req.mode in ("inpaint", "reference", "outpaint") else req0.prompt,
+            "edit_prompt": req0.prompt, "edit_prompt_en": req.prompt if req.prompt != req0.prompt else None,
             "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id, "seed": seed,
             "edit": {"mode": req.mode, "fill": req.fill, "denoise": req.denoise, "references": req.references,
                      "character": req.character, "aspect": req.aspect, "anchor": req.anchor,
                      "pads": job.decision.get("pads")},
-            "label": req.label or _action_label(req),
+            "label": req0.label or _action_label(req0),
         })
         if mask_bytes:
             self.library.update(rec["id"], mask_file=self.library.save_side_file(rec["id"], ".mask.png", mask_bytes))
         job.result_ids.append(rec["id"])
+
+    async def _maybe_translate(self, job: Job, text: str, family: str, flag: bool | None) -> str:
+        """Korean request -> English prompt for models that need it (uses the Qwen3-VL already downloaded)."""
+        from . import translate as tr
+        mode = "always" if flag is True else "never" if flag is False else self.settings.translate
+        if not text or not tr.should_translate(text, family, mode):
+            return text
+        vlm = self.vlm_file()
+        if not vlm:
+            return text
+        job.message = "한국어를 영어 프롬프트로 바꾸는 중"
+        try:
+            outputs = await self.comfy.run_outputs(workflows.rewrite_text(vlm, tr.instruction(text, family)))
+        except ComfyError:
+            return text                       # translation is a nicety; never block the picture on it
+        result = tr.clean(output_text(outputs), text)
+        job.result.setdefault("translated", []).append({"from": text, "to": result})
+        return result
 
     async def _run_segment(self, job: Job) -> None:
         req = SegmentRequest(**job.request)
