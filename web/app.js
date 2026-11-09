@@ -1095,6 +1095,7 @@ const Editor = (() => {
       const done = await pollJob(j.id, x => { ov.querySelector('.bar').style.setProperty('--p', Math.round(x.progress * 100) + '%'); ov.querySelector('.m').textContent = x.status === 'queued' && x.queue_position > 1 ? `앞에 ${x.queue_position - 1}개 대기 중` : x.message; });
       if (done.status === 'done') {
         pending = false; promptEl.value = ''; autoGrow(promptEl); clearMask(false); segSel = [];
+        if (done.result && done.result.fallback) toast(`처음 결과가 거의 그대로여서 ${done.result.fallback}(으)로 그 부분을 다시 그렸어요`, 6000);
         location.hash = 'edit=' + done.result_ids[0];
       } else if (done.status === 'error') toast('실패: ' + done.error + ' — 오른쪽 위 상태 표시를 누르면 진단 정보가 복사돼요', 9000);
       else toast('취소했어요');

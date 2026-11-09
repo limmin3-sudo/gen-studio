@@ -133,12 +133,17 @@ def test_masked_edits_keep_the_person(client, fake):
     e = wait_job(client, client.post("/api/edit", json={"image_id": qimg, "segments": ["woman"],
                                                          "prompt": "허벅지를 더 탄탄하게"}).json()["id"])
     assert e["status"] == "done", e["error"]
-    g = last_graph(fake)
+    g = [x for x in fake.prompts.values() if nodes(x, "TextEncodeQwenImage21")][-1]
     enc = nodes(g, "TextEncodeQwenImage21")[0]
-    assert {"images.image_1", "images.image_2"} <= set(enc) and "허벅지를 더 탄탄하게" in enc["prompt"]
+    # the Korean request reaches Qwen as a plain English instruction (fake Qwen3-VL answers with a fixed sentence)
+    assert {"images.image_1", "images.image_2"} <= set(enc) and "A woman sitting by a window" in enc["prompt"]
+    assert "허벅지" not in enc["prompt"]
     assert "the woman" in enc["prompt"] and "Keep the same person" in enc["prompt"]
     assert "SetLatentNoiseMask" not in [n["class_type"] for n in g.values()]
     assert nodes(g, "ImageCompositeMasked")[0]["resize_source"] is True
+    # the fake hands the picture back unchanged: the area is redrawn once with the helper model
+    assert e["result"]["fallback"] and nodes(last_graph(fake), "SetLatentNoiseMask")
+    assert client.get(f"/api/images/{e['result_ids'][0]}").json()["model_id"] == "cyberrealistic-zit"
     assert "Remove the epaulets" in qwen_mask_instruction("", "clear", ["epaulets"])
 
     # other models: a modification keeps the original (denoise 0.6, original prompt + change)

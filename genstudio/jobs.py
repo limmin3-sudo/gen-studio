@@ -50,6 +50,23 @@ def region_position(box: tuple[float, float, float, float]) -> str:
     return "in the center"
 
 
+UNCHANGED = 4.0          # mean pixel difference (0-255) inside the mask below which an edit "did nothing"
+
+
+def masked_change(before: bytes, after: bytes, mask_png: bytes | None) -> float:
+    """How much the selected area changed: mean absolute difference inside the mask, on small copies."""
+    if not mask_png:
+        return 255.0
+    from PIL import ImageChops, ImageStat
+    with Image.open(io.BytesIO(before)) as a, Image.open(io.BytesIO(after)) as b, Image.open(io.BytesIO(mask_png)) as m:
+        size = (256, max(1, round(256 * a.height / a.width)))
+        a2, b2 = a.convert("L").resize(size), b.convert("L").resize(size)
+        m2 = m.convert("L").resize(size).point(lambda v: 255 if v > 127 else 0)
+        if not m2.getbbox():
+            return 255.0
+        return ImageStat.Stat(ImageChops.difference(a2, b2), mask=m2).mean[0]
+
+
 def fit_on_black(png: bytes, w: int, h: int) -> bytes:
     """Fit a pose map inside w x h without stretching; the rest stays black (= no body there)."""
     with Image.open(io.BytesIO(png)) as im:
@@ -1418,8 +1435,13 @@ class Engine:
             mask_name = await self.comfy.upload_image(mask, f"{src['id']}-mask-{job.id}.png")
             if model.family.encoder == "qwen21":
                 names = self._segment_names(src["id"], req0.segments)
+                ask = req0.prompt
+                if req.fill == "prompt" and req0.prompt.strip():
+                    ask = await self._edit_english(job, req0.prompt.strip())
+                    if ask != req0.prompt:
+                        req = req.model_copy(update={"prompt": ask})
                 graph, extra = workflows.masked_reference(
-                    model, image_name, mask_name, qwen_mask_instruction(req0.prompt, req.fill, names), req.negative, seed,
+                    model, image_name, mask_name, qwen_mask_instruction(ask, req.fill, names), req.negative, seed,
                     grow=mask_grow(req0.prompt, src["width"], src["height"]), models_dir=self.settings.models_dir, **lw)
             else:
                 denoise = req.denoise
@@ -1455,6 +1477,23 @@ class Engine:
                                              req.denoise or 0.55, models_dir=self.settings.models_dir, **lw)
         outs = await self.comfy.run(graph, self._progress(job, 0, 1))
         data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+        if (req.mode == "inpaint" and req.fill == "prompt" and model.family.encoder == "qwen21"
+                and masked_change(src_path.read_bytes(), data, mask_bytes) < UNCHANGED):
+            # Qwen sometimes hands the selected area back untouched; redraw it once with the helper model
+            helper = self.helper_model("semi" if src.get("style") == "semi" else "realistic")
+            if helper is not None:
+                job.message = f"그대로 나와서 {helper.name}(으)로 다시 그리는 중"
+                log.warning("편집 %s: 선택 영역이 거의 안 바뀜 → %s로 다시 그림", job.id, helper.id)
+                await self._switch_family(helper.family.id)
+                text = await self._result_prompt(job, req0.prompt.strip(), helper.family.id)
+                graph, extra = workflows.inpaint(helper, image_name, mask_name, ", ".join(x for x in (text, base_prompt) if x),
+                                                 req.negative, seed, denoise=0.9,
+                                                 grow=mask_grow(req0.prompt, src["width"], src["height"]),
+                                                 models_dir=self.settings.models_dir)
+                outs = await self.comfy.run(graph, self._progress(job, 0.5, 0.5))
+                data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+                model = helper
+                job.result["fallback"] = helper.name
         rec = self.library.add(data, {
             "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             "kind": "edit", "source": src.get("source", "gen-studio"), "parent_id": src["id"],
@@ -1511,6 +1550,31 @@ class Engine:
             text += f" --no {neg}"
         return {"prompt": text, "model_name": d["model_name"], "model_id": d["model_id"], "family": d["family"],
                 "style": d["style"], "aspect": d.get("aspect")}
+
+    async def _edit_english(self, job: Job, text: str) -> str:
+        """Korean edit request -> one plain English instruction (Qwen follows that more reliably)."""
+        from . import translate as tr
+        vlm = self.vlm_file()
+        if not tr.has_korean(text) or not vlm:
+            return text
+        job.message = "요청을 편집 지시로 바꾸는 중"
+        try:
+            out = await self.comfy.run_outputs(workflows.rewrite_text(vlm, tr.edit_instruction(text), max_length=120))
+        except ComfyError:
+            return text
+        return tr.clean(output_text(out), text)
+
+    async def _result_prompt(self, job: Job, text: str, family: str) -> str:
+        """For redraw models: describe what the area should show (a prompt), not the command."""
+        from . import translate as tr
+        vlm = self.vlm_file()
+        if not text or not vlm:
+            return text
+        try:
+            out = await self.comfy.run_outputs(workflows.rewrite_text(vlm, tr.instruction(text, family)))
+        except ComfyError:
+            return text
+        return tr.clean(output_text(out), text)
 
     async def _maybe_translate(self, job: Job, text: str, family: str, flag: bool | None) -> str:
         """Korean request -> English prompt for models that need it (uses the Qwen3-VL already downloaded)."""

@@ -60,3 +60,14 @@ Request: """
 
 def enhance_instruction(text: str, family: str) -> str:
     return (ENHANCE_TAGS if family == "illustrious" else ENHANCE_SENTENCE) + text.strip()
+
+
+EDIT = """Rewrite the image edit request below as one short, clear English instruction for an image editing model
+(imperative, e.g. "Change the jacket to red leather."). Keep every detail of the request and add nothing.
+Reply with the instruction only.
+
+Request: """
+
+
+def edit_instruction(text: str) -> str:
+    return EDIT + text.strip()
