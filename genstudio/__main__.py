@@ -51,12 +51,15 @@ def tailscale_url(port: int, enable: bool) -> str | None:
     """Publishes Gen Studio on the private Tailscale network (https://<pc>.<tailnet>.ts.net)."""
     exe = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
     try:
-        st = json.loads(subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=8).stdout)
+        # Tailscale prints UTF-8; Korean Windows would otherwise decode it as cp949 and fail
+        st = json.loads(subprocess.run([exe, "status", "--json"], capture_output=True, encoding="utf-8",
+                                       errors="replace", timeout=8).stdout)
         name = st["Self"]["DNSName"].rstrip(".")
     except Exception:
         return None
     if enable:
-        r = subprocess.run([exe, "serve", "--bg", str(port)], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([exe, "serve", "--bg", str(port)], capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=60)
         msg = (r.stdout + r.stderr).strip()
         if r.returncode != 0 or "http" in msg.lower() and "enable" in msg.lower():
             # first use: Tailscale asks to switch on Serve/HTTPS for the tailnet and prints a link

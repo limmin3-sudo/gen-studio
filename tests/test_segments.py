@@ -162,3 +162,11 @@ def test_bigger_requests_widen_the_mask(client, fake):
     segment(client, img)
     wait_job(client, client.post("/api/edit", json={"image_id": img, "segments": ["white collared shirt"], "prompt": "가슴 볼륨 키워줘"}).json()["id"])
     assert nodes(last_graph(fake), "GrowMask")[0]["expand"] == 81
+
+
+def test_library_restarts_with_segment_files(client, settings):
+    from genstudio.library import Library
+    img = imported(client, 300, 400)
+    segment(client, img)
+    lib = Library(settings.output_dir)          # what happens on the next start
+    assert lib.get(img) is not None and all(isinstance(r, dict) for r in lib.list())

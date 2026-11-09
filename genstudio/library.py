@@ -35,11 +35,15 @@ class Library:
 
     def _scan(self) -> None:
         for meta in self.root.glob("*/*.json"):
+            if meta.name.endswith(".segments.json"):      # segment lists live next to images; not image records
+                continue
             try:
                 rec = json.loads(meta.read_text(encoding="utf-8"))
+                if not isinstance(rec, dict) or "id" not in rec or "file" not in rec:
+                    continue
                 if (self.root / rec["file"]).exists():
                     self._items[rec["id"]] = rec
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
 
     # ------------------------------------------------------------ write
