@@ -592,6 +592,7 @@ const Editor = (() => {
   const area = $('#area'), frame = $('#frame'), imgbox = $('#imgbox'), rail = $('#rail'), pane = $('#pane');
   const promptEl = $('#edPrompt'), form = $('#edForm'), routeEl = $('#edRoute');
   let rec = null, versions = [], tool = store.get('tool', 'seg'), zoom = 1, painted = false, pending = false, busy = null;
+  if (!['seg', 'brush', 'crop'].includes(tool)) tool = 'seg';
   let segs = [], segSel = [], segHover = null, segState = 'idle', segHits = {}, segOpen = {};   // segState: idle|running|done|none
   const segLayer = $('#segLayer');
   const hasSel = () => painted || segSel.length > 0;
@@ -674,8 +675,6 @@ const Editor = (() => {
         <div class="field"><label for="bSize">브러시 크기 <b id="bSizeV">${brushSize}</b>px</label><input type="range" id="bSize" min="6" max="160" value="${brushSize}"></div>
         <div class="field"><span>모드</span><div class="seg2"><button data-bm="paint" aria-pressed="${!erasing}">칠하기</button><button data-bm="erase" aria-pressed="${erasing}">지우개</button><button id="bClear">모두 지우기</button></div></div>
         <div class="field"><div class="seg2"><button id="bDelete" ${painted ? '' : 'disabled'}>칠한 부분 삭제하기</button></div></div>`;
-    } else if (tool === 'color') {
-      h = `<h2>색상 <span class="badge">2단계</span></h2><p class="note">선택한 부분의 색만 바로 바꾸는 기능은 세그먼트와 함께 2단계에서 추가됩니다. 지금은 칠한 뒤 "빨간색으로"처럼 입력하면 됩니다.</p>`;
     } else if (tool === 'crop') {
       const ASP = ['3:4', '2:3', '9:16', '4:5', '1:1', '4:3', '3:2', '16:9'];
       const ANC = [['top', '위에 붙이기'], ['center', '가운데'], ['bottom', '아래에 붙이기'], ['left', '왼쪽'], ['right', '오른쪽']];
@@ -684,45 +683,55 @@ const Editor = (() => {
         <div class="field"><span>새 비율 (지금 ${rec ? `${rec.width}×${rec.height}` : ''})</span><div class="seg2">${ASP.map(a => `<button data-asp="${a}" aria-pressed="${a === expandAspect}">${a}</button>`).join('')}</div></div>
         <div class="field"><span>원래 그림 위치</span><div class="seg2">${ANC.map(([k, n]) => `<button data-anc="${k}" aria-pressed="${k === expandAnchor}">${n}</button>`).join('')}</div></div>
         <div class="field"><div class="seg2"><button id="doExpand" aria-pressed="true">늘리기</button></div></div>`;
-    } else {
-      h = `<h2>그려서 지시 <span class="badge">3단계</span></h2><p class="note">이미지 위에 대충 그리고 "여기에 가방 추가"처럼 입력하면 그 모양대로 그려 넣는 기능입니다. 3단계에서 추가됩니다.</p>`;
     }
-    h += `<label class="switch" style="margin:4px 0 16px"><input type="checkbox" id="autoFillToggle" ${autoFill ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>`;
+    if (tool === 'seg' || tool === 'brush') h += `<label class="switch" style="margin:4px 0 16px"><input type="checkbox" id="autoFillToggle" ${autoFill ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>`;
     if (rec) {
       const model = MODELS.find(m => m.id === rec.model_id);
-      h += `<h2>영상 만들기</h2>
-        <p class="note">이 이미지를 움직이는 짧은 영상으로 만듭니다 (Wan 2.2). 아래 입력칸에 "고개를 돌리며 웃는다, 머리카락이 바람에 날린다"처럼 움직임을 적으세요. 비우면 자연스럽게 살짝 움직여요. 몇 분 걸려요.</p>
-        <div class="field"><span>길이</span><div class="seg2">${[3, 5].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div></div>
-        <div class="field"><span>화질</span><div class="seg2">${['480p', '720p'].map(q => `<button data-vq="${q}" aria-pressed="${q === vidQ}">${q}${q === '720p' ? ' (느림)' : ''}</button>`).join('')}</div></div>
-        <div class="field"><div class="seg2"><button id="makeVideo" aria-pressed="true">영상 만들기</button></div></div>`;
-      h += `<h2>업스케일</h2>
-        <p class="note">크게 키운 뒤 피부·머리카락·옷감 디테일을 살짝 다시 그립니다. 새 버전으로 저장돼요. (지금 ${rec.width}×${rec.height})</p>
-        <div class="field"><div class="seg2"><button data-up="2">2배 (약 2K)</button><button data-up="4">4배 (약 4K)</button></div></div>
-        <label class="switch" style="margin:0 0 16px"><input type="checkbox" id="upRefine" ${upRefine ? 'checked' : ''}><span>디테일 다시 그리기 (끄면 그냥 선명하게만 키움)</span></label>`;
-      h += `<h2>디테일 보정</h2>
-        <p class="note">작게 나온 얼굴·눈·손을 찾아 크게 다시 그린 뒤 제자리에 붙입니다. 전신이나 여러 명 나온 사진에 좋아요. 아래 입력칸에 "미소", "푸른 눈"처럼 덧붙일 수 있어요.</p>
-        <div class="field"><div class="seg2"><button data-det="face">얼굴</button><button data-det="face,eyes">얼굴+눈</button><button data-det="hands">손</button><button data-det="face,eyes,hands">전부</button></div></div>
-        <div class="field"><span>세기</span><div class="seg2">${[[0.3, '약하게'], [0.4, '보통'], [0.55, '강하게']].map(([v, n]) => `<button data-dstr="${v}" aria-pressed="${v === detStrength}">${n}</button>`).join('')}</div></div>`;
-      h += `<h2>배경 제거</h2>
-        <p class="note">사람이나 물건만 남기고 배경을 지웁니다. 새 버전으로 저장되고, PNG로 받으면 투명하게 남아요.</p>
-        <div class="field"><div class="seg2"><button data-bg="transparent">투명</button><button data-bg="white">흰색</button><button data-bg="gray">회색</button><button data-bg="black">검정</button></div></div>`;
-      h += `<h2>정보</h2><dl class="kv">
-        ${rec.prompt ? `<dt>프롬프트</dt><dd>${esc(rec.prompt)}</dd>` : ''}
-        ${rec.prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.prompt_en)}</dd>` : ''}
-        ${rec.edit_prompt ? `<dt>편집</dt><dd>${esc(rec.edit_prompt)}</dd>` : ''}
-        ${rec.edit_prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.edit_prompt_en)}</dd>` : ''}
-        <dt>모델</dt><dd>${esc(model?.name || rec.model_id || (rec.embedded?.tool ? rec.embedded.tool + ' (외부)' : '외부 이미지'))}</dd>
-        <dt>크기</dt><dd>${rec.width}×${rec.height}</dd>
-        ${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}
-        <dt>버전</dt><dd>${versions.findIndex(v => v.id === rec.id) + 1} / ${versions.length}</dd></dl>
-        <h2 style="margin-top:18px">이 인물 다시 쓰기</h2>
-        <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">이 사진만 등록</button></div></div>
-        <div class="field"><div class="seg2"><button id="buildChar" aria-pressed="true">이 사진 1장으로 캐릭터 만들기</button></div>
-          <p class="note" style="margin-top:6px">얼굴 정면·전신·3/4 측면 사진을 새로 만들고 인물 특징을 읽어서 함께 등록해요. 같은 사람으로 더 잘 그려집니다. (Qwen-Image 2.1, 3장 몇 분)</p></div>
-        <div class="field"><div class="seg2"><button id="useAsRef">생성 화면의 참고 이미지로 보내기</button><button id="useAsPose">이 자세로 새로 그리기</button></div></div>`;
+      h += `<div class="accs">`
+        + acc('upscale', '업스케일', '2K·4K로 키우기', `
+          <p class="note">크게 키운 뒤 피부·머리카락·옷감 디테일을 살짝 다시 그립니다. 새 버전으로 저장돼요. (지금 ${rec.width}×${rec.height})</p>
+          <div class="field"><div class="seg2"><button data-up="2">2배 (약 2K)</button><button data-up="4">4배 (약 4K)</button></div></div>
+          <label class="switch"><input type="checkbox" id="upRefine" ${upRefine ? 'checked' : ''}><span>디테일 다시 그리기 (끄면 선명하게만 키움)</span></label>`)
+        + acc('detail', '디테일 보정', '작은 얼굴·눈·손 살리기', `
+          <p class="note">작게 나온 얼굴·눈·손을 찾아 크게 다시 그린 뒤 제자리에 붙입니다. 전신이나 여러 명 나온 사진에 좋아요. 아래 입력칸에 "미소", "푸른 눈"처럼 덧붙일 수 있어요.</p>
+          <div class="field"><div class="seg2"><button data-det="face">얼굴</button><button data-det="face,eyes">얼굴+눈</button><button data-det="hands">손</button><button data-det="face,eyes,hands">전부</button></div></div>
+          <div class="field"><span>세기</span><div class="seg2">${[[0.3, '약하게'], [0.4, '보통'], [0.55, '강하게']].map(([v, n]) => `<button data-dstr="${v}" aria-pressed="${v === detStrength}">${n}</button>`).join('')}</div></div>`)
+        + acc('bg', '배경 제거', '투명·단색 배경', `
+          <p class="note">사람이나 물건만 남기고 배경을 지웁니다. 새 버전으로 저장되고, PNG로 받으면 투명하게 남아요.</p>
+          <div class="field"><div class="seg2"><button data-bg="transparent">투명</button><button data-bg="white">흰색</button><button data-bg="gray">회색</button><button data-bg="black">검정</button></div></div>`)
+        + acc('video', '영상 만들기', '3초·5초 움직이는 영상', `
+          <p class="note">아래 입력칸에 "고개를 돌리며 웃는다, 머리카락이 바람에 날린다"처럼 움직임을 적으세요. 비우면 자연스럽게 살짝 움직여요. 몇 분 걸려요.</p>
+          <div class="field"><span>길이</span><div class="seg2">${[3, 5].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div></div>
+          <div class="field"><span>화질</span><div class="seg2">${['480p', '720p'].map(q => `<button data-vq="${q}" aria-pressed="${q === vidQ}">${q}${q === '720p' ? ' (느림)' : ''}</button>`).join('')}</div></div>
+          <div class="field"><div class="seg2"><button id="makeVideo" aria-pressed="true">영상 만들기</button></div></div>`)
+        + acc('person', '이 인물·자세 다시 쓰기', '캐릭터 등록, 포즈, 참고 이미지', `
+          <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">이 사진만 등록</button></div></div>
+          <div class="field"><div class="seg2"><button id="buildChar" aria-pressed="true">이 사진 1장으로 캐릭터 만들기</button></div>
+            <p class="note" style="margin-top:6px">얼굴 정면·전신·3/4 측면 사진과 인물 특징을 만들어 함께 등록해요. 같은 사람으로 더 잘 그려집니다.</p></div>
+          <div class="field"><div class="seg2"><button id="useAsPose">이 자세로 새로 그리기</button><button id="useAsRef">참고 이미지로 보내기</button></div></div>`)
+        + acc('info', '정보', `${rec.width}×${rec.height} · 버전 ${versions.findIndex(v => v.id === rec.id) + 1}/${versions.length}`, `<dl class="kv">
+          ${rec.prompt ? `<dt>프롬프트</dt><dd>${esc(rec.prompt)}</dd>` : ''}
+          ${rec.prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.prompt_en)}</dd>` : ''}
+          ${rec.edit_prompt ? `<dt>편집</dt><dd>${esc(rec.edit_prompt)}</dd>` : ''}
+          ${rec.edit_prompt_en ? `<dt>영어로 변환</dt><dd>${esc(rec.edit_prompt_en)}</dd>` : ''}
+          <dt>모델</dt><dd>${esc(model?.name || rec.model_id || (rec.embedded?.tool ? rec.embedded.tool + ' (외부)' : '외부 이미지'))}</dd>
+          <dt>크기</dt><dd>${rec.width}×${rec.height}</dd>
+          ${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}
+          <dt>버전</dt><dd>${versions.findIndex(v => v.id === rec.id) + 1} / ${versions.length}</dd></dl>`)
+        + `</div>`;
     }
+    const top = pane.scrollTop;
     pane.innerHTML = h;
+    pane.scrollTop = top;
   }
+  const accOpen = new Set(store.get('acc', []));
+  function acc(key, title, sub, inner) {
+    return `<details class="acc" data-acc="${key}" ${accOpen.has(key) ? 'open' : ''}><summary><b>${title}</b><span>${esc(sub)}</span></summary><div class="accb">${inner}</div></details>`;
+  }
+  pane.addEventListener('toggle', e => {
+    const d = e.target.closest?.('[data-acc]'); if (!d) return;
+    d.open ? accOpen.add(d.dataset.acc) : accOpen.delete(d.dataset.acc); store.set('acc', [...accOpen]);
+  }, true);
   pane.addEventListener('pointerover', e => { const r = e.target.closest('[data-skey]'); const k = r ? r.dataset.skey : null; if (k !== segHover) { segHover = k; paintSegLayer(); } });
   pane.addEventListener('pointerleave', () => { if (segHover) { segHover = null; paintSegLayer(); } });
   pane.addEventListener('keydown', e => { if (e.target.id === 'segFind' && e.key === 'Enter') { e.preventDefault(); $('#findSeg').click(); } });
@@ -1095,7 +1104,13 @@ const Editor = (() => {
       await runJob(j, `${j.decision.action} · ${j.decision.width}×${j.decision.height} · Wan 2.2`);
     } catch (e) { toast(e.message, 6000); }
   }
-  $('#videoBtn').onclick = makeVideo;
+  $('#videoBtn').onclick = () => {
+    if (!rec) return;
+    if (rec.media === 'video') { toast('영상에서 다시 영상을 만들 수는 없어요. 원본 이미지를 고르세요.'); return; }
+    accOpen.add('video'); store.set('acc', [...accOpen]); paintPane();
+    pane.querySelector('[data-acc="video"]')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    promptEl.placeholder = '어떻게 움직일지 적고, 오른쪽의 영상 만들기를 누르세요'; promptEl.focus();
+  };
   $('#arBtn').onclick = () => setTool('crop');
   $('#copyBtn').onclick = async () => {
     const text = rec?.edit_prompt || rec?.prompt || '';

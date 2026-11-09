@@ -316,3 +316,15 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .qr > div{min-width:0;flex:1}
 @media (max-width:520px){.qr{flex-direction:column}}
 .banner a{color:inherit;font-weight:600}
+
+/* editor: collapsible tool sections */
+.accs{display:grid;gap:8px;margin-top:4px}
+.acc{border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.acc summary{display:flex;align-items:baseline;gap:8px;padding:11px 14px;cursor:pointer;list-style:none;user-select:none}
+.acc summary::-webkit-details-marker{display:none}
+.acc summary b{font-size:14px;font-weight:600}
+.acc summary span{font-size:12px;color:var(--muted);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acc summary::after{content:"";width:7px;height:7px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(45deg);margin-left:auto;align-self:center;transition:transform .15s}
+.acc[open] summary::after{transform:rotate(-135deg)}
+.acc .accb{padding:0 14px 12px}
+.acc .accb .note:first-child{margin-top:0}

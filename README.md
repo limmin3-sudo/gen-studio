@@ -42,7 +42,10 @@
    - 모델 다운로드 (약 75GB).
 
    중간에 끊겨도 다시 실행하면 이어서 진행합니다.
-4. **`start.bat`** 을 더블클릭하면 ComfyUI가 켜지고 브라우저에서 Gen Studio가 열립니다 (`http://127.0.0.1:7860`).
+4. 설치가 끝나면 **바탕화면의 `Gen Studio` 아이콘**을 더블클릭하세요. 콘솔 창 없이 앱 창으로 열리고, ComfyUI도 뒤에서 함께 켜집니다.
+   - 작업 중에 창을 닫으면 트레이(작업 표시줄 오른쪽 아래)에서 계속 돌아가요. 완전히 끄려면 트레이 아이콘 → 종료.
+   - 업데이트, 모델 받기, ComfyUI 다시 켜기·업데이트, 원격 접속(QR), Codex 연결은 앱의 **설정** 탭에서 버튼으로 합니다.
+   - 예전처럼 `start.bat`(브라우저로 열기)도 그대로 쓸 수 있어요.
 
 ## 기본 모델
 
@@ -62,7 +65,7 @@ Qwen은 학습 단계에서 노출 표현이 약하므로, 인물 위주 이미�
 
 ## Codex·ChatGPT에서 쓰기
 
-- **Codex (집 PC)**: `connect-codex.bat` 을 실행하고 Codex 앱을 다시 시작하면 됩니다. 자세한 내용은 [docs/codex.md](docs/codex.md)를 보세요.
+- **Codex (집 PC)**: 설정 탭의 "Codex에 연결하기"(또는 `connect-codex.bat`)를 누르고 Codex 앱을 다시 시작하면 됩니다. 자세한 내용은 [docs/codex.md](docs/codex.md)를 보세요.
 - **다른 프로젝트에서 짧게 부탁하기**: 처음 한 번만 설정하면 "디렉터 튜토리얼 장면 하나 만들어줘"처럼 말해도 됩니다. [docs/project-setup.md](docs/project-setup.md)를 보세요.
 - **노트북에서 집 PC 쓰기**: Tailscale로 연결합니다. [docs/remote.md](docs/remote.md)를 보세요.
 - **ChatGPT**: ChatGPT는 인터넷에 공개된 HTTPS 주소와 OAuth 로그인이 필요합니다. 2단계에서 추가합니다.
@@ -84,7 +87,7 @@ prototype/editor.html  편집기 디자인 미리보기
 ## 문제가 생기면
 
 - **상태 점검**: Gen Studio가 켜진 상태에서 `http://127.0.0.1:7860/api/doctor` 를 열면 ComfyUI 연결, 필요한 노드, 모델 파일 상태를 보여줍니다.
-- **"ComfyUI 꺼짐"**: `start.bat` 이 ComfyUI를 새 창으로 켭니다. 그 창에 오류가 보이면 NVIDIA 드라이버를 최신으로 업데이트하세요.
+- **"ComfyUI 꺼짐"**: 설정 탭에서 "다시 켜기"를 누르세요. 그래도 안 되면 진단 정보를 복사해 보세요(ComfyUI 로그가 들어 있어요). 앱으로 켜면 로그는 `data/logs/` 에 쌓입니다.
 - **메모리 부족(out of memory)**: 다른 프로그램(게임, 브라우저 탭)을 닫고 다시 시도하세요. 실사와 반실사 모델을 번갈아 쓰면 바꿀 때마다 메모리를 비웁니다.
 - **모델이 안 받아짐**: Civitai API 키와 성인 콘텐츠 설정을 확인하고 `update.bat` 을 다시 실행하세요.
 
