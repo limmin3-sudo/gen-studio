@@ -1,5 +1,6 @@
 # 모델 목록
 # 모델을 추가하려면 models 아래에 항목을 하나 더 적으면 됩니다.
+# optional: true 인 모델은 기본 설치에서 빠지고, 받지 않으면 자동 선택에도 나오지 않습니다.
 # file.dir 은 ComfyUI/models 아래 폴더 이름입니다.
 
 families:
@@ -135,6 +136,7 @@ models:
       sha256: F74F5E7144B7922B57210EE223F37279CE9D6BBAF8724DD0F4B5412858A99A8A
 
   - id: realdream-zit
+    optional: true          # 기본 설치에서 제외. 받으려면: update.bat 대신 download_models.py --models realdream-zit
     name: "Real Dream ZIT v7"
     family: zimage
     style: realistic
@@ -160,6 +162,7 @@ models:
       sha256: D6ED32169BD6605F1AA21A4F603799E3865E97B80A7DEDED0C4D8B0BF133D2A4
 
   - id: semireal-mm
+    optional: true          # 기본 설치에서 제외. 받으려면: update.bat 대신 download_models.py --models semireal-mm
     name: "Semi-Real (Illustrious) MM v5"
     family: illustrious
     style: semi

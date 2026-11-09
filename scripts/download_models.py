@@ -1,6 +1,7 @@
 """Download the model files listed in config/models.yaml into ComfyUI/models.
 
-    python scripts/download_models.py            # everything that is missing
+    python scripts/download_models.py            # everything that is missing (optional models skipped)
+    python scripts/download_models.py --all      # include optional models
     python scripts/download_models.py --check    # only report what is missing
     python scripts/download_models.py --models cyberrealistic-zit realism-illustrious
 
@@ -126,7 +127,8 @@ def download(f: FileSpec, dest: Path, client: httpx.Client, key: str | None, ver
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", nargs="*", help="받을 모델 id (기본: 전부)")
+    ap.add_argument("--models", nargs="*", help="받을 모델 id (기본: 선택 모델을 뺀 전부)")
+    ap.add_argument("--all", action="store_true", help="선택(optional) 모델까지 전부 받기")
     ap.add_argument("--check", action="store_true", help="받지 않고 상태만 확인")
     ap.add_argument("--no-verify", action="store_true", help="다운로드 후 sha256 검사 생략")
     ap.add_argument("--yes", action="store_true", help="묻지 않고 진행")
@@ -138,7 +140,13 @@ def main() -> int:
         return 1
     models_dir = settings.models_dir
     reg = Registry.load()
-    chosen = [reg.get(m) for m in args.models] if args.models else reg.models
+    if args.models:
+        chosen = [reg.get(m) for m in args.models]
+    else:
+        chosen = [m for m in reg.models if args.all or not m.optional or m.installed(models_dir)]
+        skipped = [m for m in reg.models if m not in chosen]
+        if skipped:
+            print("  선택 모델 (기본 설치에서 제외): " + ", ".join(f"{m.name} [--models {m.id}]" for m in skipped))
 
     todo: list[tuple[str, FileSpec]] = []
     seen: set[str] = set()

@@ -73,6 +73,7 @@ class ModelSpec:
     file: FileSpec
     prompt_prefix: str | None = None
     keywords: list[str] = field(default_factory=list)   # words that pick this model directly
+    optional: bool = False                               # not downloaded unless asked for
 
     @property
     def prefix(self) -> str:
@@ -147,6 +148,7 @@ class Registry:
                 "family_name": m.family.name,
                 "style": m.style,
                 "role": m.role,
+                "optional": m.optional,
                 "installed": m.installed(models_dir),
                 "missing": [f.name for f in m.all_files() if f.installed(models_dir) is False],
             }

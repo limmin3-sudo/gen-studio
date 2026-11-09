@@ -59,7 +59,7 @@ if (Test-Path $comfyMain) {
     if (-not (Test-Path $comfyMain)) { throw "ComfyUI 폴더를 찾을 수 없어요: $comfyMain" }
 }
 
-Step "5/5 모델 다운로드 (약 90GB)"
+Step "5/5 모델 다운로드 (약 75GB)"
 & .venv\Scripts\python.exe scripts\download_models.py
 $code = $LASTEXITCODE
 
