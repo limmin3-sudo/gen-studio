@@ -41,6 +41,18 @@
             <select id="genChar" aria-label="캐릭터"><option value="">없음</option></select></label>
           <button type="button" class="sel-pill" id="addRef">+ 참고 이미지</button>
           <button type="button" class="sel-pill" id="addLora">+ LoRA</button>
+          <button type="button" class="sel-pill adv" id="advBtn" aria-expanded="false">고급 <b id="advBadge"></b></button>
+        </div>
+        <div class="advpanel" id="genAdv" hidden>
+          <div class="advcol">
+            <h3>영역 나누기 <span class="hint">그림 위에서 끌어 상자를 그리고, 상자마다 무엇을 그릴지 적으세요. 아래 입력칸에는 장면 전체를 적어요.</span></h3>
+            <div class="board" id="regBoard"><span class="hint bh">여기를 끌어서 상자 그리기</span></div>
+          </div>
+          <div class="advcol">
+            <div class="reglist" id="regList"></div>
+            <label class="advf">네거티브 (빼고 싶은 것)<input id="genNeg" placeholder="예: 모자, 글자, 흐림"></label>
+            <label class="advf">시드 (비우면 매번 다르게)<input id="genSeed" inputmode="numeric" placeholder="랜덤"></label>
+          </div>
         </div>
         <div class="lpick" id="loraPick" hidden></div>
         <div class="refs" id="genRefs"></div>

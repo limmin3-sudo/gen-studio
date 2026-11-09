@@ -200,10 +200,59 @@ const Gen = (() => {
   prompt.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(preview, 250); store.set('lastPrompt', prompt.value); });
 
   function body() {
+    const seed = parseInt($('#genSeed').value, 10);
     return {prompt: prompt.value.trim(), style: sels.style.value, aspect: sels.aspect.value, count: +sels.count.value,
             model: sels.model.value, character: charSel.value || null, references: refs,
-            loras: picked.map(p => ({name: p.id, strength: p.strength}))};
+            loras: picked.map(p => ({name: p.id, strength: p.strength})),
+            negative: $('#genNeg').value.trim(), seed: Number.isFinite(seed) && seed >= 0 ? seed : -1,
+            regions: regions.filter(r => r.prompt.trim()).map(r => ({box: r.box.map(v => +v.toFixed(4)), prompt: r.prompt.trim()}))};
   }
+
+  /* ---- advanced: regions (boxes drawn on a canvas of the chosen ratio), negative, seed */
+  let regions = store.get('gen.regions', []);
+  const board = $('#regBoard'), regList = $('#regList'), advBtn = $('#advBtn');
+  const ASPECT_WH = {square: [1, 1], portrait: [2, 3], landscape: [3, 2], tall: [9, 16], wide: [16, 9]};
+  function saveRegions() { store.set('gen.regions', regions); $('#advBadge').textContent = regions.length || ''; }
+  function boardRatio() {
+    const [w, h] = lastRoute ? [lastRoute.width, lastRoute.height] : (ASPECT_WH[sels.aspect.value] || [1, 1]);
+    board.style.aspectRatio = `${w} / ${h}`;
+    board.style.width = `min(100%, ${300 * w / h}px)`;
+  }
+  function drawRegions(draft) {
+    boardRatio();
+    board.querySelectorAll('.rg').forEach(x => x.remove());
+    [...regions, ...(draft ? [{box: draft, draft: true}] : [])].forEach((r, i) => {
+      const d = document.createElement('div'); d.className = 'rg' + (r.draft ? ' draft' : '');
+      const [x0, y0, x1, y1] = r.box;
+      Object.assign(d.style, {left: x0 * 100 + '%', top: y0 * 100 + '%', width: (x1 - x0) * 100 + '%', height: (y1 - y0) * 100 + '%'});
+      if (!r.draft) d.innerHTML = `<i>${i + 1}</i>`;
+      board.appendChild(d);
+    });
+    board.querySelector('.bh').hidden = regions.length > 0 || !!draft;
+  }
+  function listRegions(focusLast) {
+    regList.innerHTML = regions.map((r, i) => `<div class="rr"><i>${i + 1}</i><input data-ri="${i}" value="${esc(r.prompt)}" placeholder="${i + 1}번 영역에 그릴 것 (예: 빨간 드레스를 입은 여자)"><button type="button" data-rdel="${i}" aria-label="영역 지우기">×</button></div>`).join('')
+      || '<p class="hint" style="margin:0">아직 영역이 없어요. 왼쪽 그림에서 끌어서 상자를 그리세요. 최대 6개.</p>';
+    if (focusLast) regList.querySelector(`[data-ri="${regions.length - 1}"]`)?.focus();
+  }
+  let dragFrom = null;
+  const rel = e => { const r = board.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+  board.addEventListener('pointerdown', e => { if (regions.length >= 6) { toast('영역은 6개까지예요'); return; } dragFrom = rel(e); board.setPointerCapture(e.pointerId); });
+  board.addEventListener('pointermove', e => { if (!dragFrom) return; const p = rel(e); drawRegions([Math.min(dragFrom[0], p[0]), Math.min(dragFrom[1], p[1]), Math.max(dragFrom[0], p[0]), Math.max(dragFrom[1], p[1])]); });
+  board.addEventListener('pointerup', e => {
+    if (!dragFrom) return; const p = rel(e), a = dragFrom; dragFrom = null;
+    const box = [Math.min(a[0], p[0]), Math.min(a[1], p[1]), Math.max(a[0], p[0]), Math.max(a[1], p[1])];
+    if ((box[2] - box[0]) * (box[3] - box[1]) < 0.01) { drawRegions(); return; }
+    regions.push({box, prompt: ''}); saveRegions(); drawRegions(); listRegions(true);
+  });
+  regList.addEventListener('input', e => { const i = e.target.dataset.ri; if (i !== undefined) { regions[+i].prompt = e.target.value; saveRegions(); } });
+  regList.addEventListener('click', e => { const b = e.target.closest('[data-rdel]'); if (b) { regions.splice(+b.dataset.rdel, 1); saveRegions(); drawRegions(); listRegions(); } });
+  advBtn.onclick = () => {
+    const open = $('#genAdv').hidden; $('#genAdv').hidden = !open; advBtn.setAttribute('aria-expanded', open); store.set('gen.adv', open);
+    if (open) { drawRegions(); listRegions(); }
+  };
+  if (store.get('gen.adv', false)) { $('#genAdv').hidden = false; advBtn.setAttribute('aria-expanded', true); setTimeout(() => { drawRegions(); listRegions(); }, 0); }
+  saveRegions();
   $('#genEnhance').onclick = async () => {
     const b = body(), btn = $('#genEnhance');
     if (!b.prompt) { prompt.focus(); toast('먼저 대충이라도 적어 주세요'); return; }
@@ -242,6 +291,7 @@ const Gen = (() => {
     try {
       const d = await api.post('/api/route', {...b, model: 'auto'});
       lastRoute = d;
+      if (!$('#genAdv').hidden) drawRegions();
       markRecommended(sels.model, d.model_id);
       const lf = [...new Set(picked.map(p => (loras.find(l => l.id === p.id) || {}).family).filter(Boolean))];
       if (lf.length && b.model === 'auto' && (MODELS.find(m => m.id === d.model_id) || {}).family !== lf[0]) {

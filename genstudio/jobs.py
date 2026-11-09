@@ -27,6 +27,39 @@ CLEAR_PROMPT = "empty background, nothing there, seamless continuation of the su
 
 
 # ------------------------------------------------------------------ requests
+class Region(BaseModel):
+    box: list[float] = Field(..., min_length=4, max_length=4)
+    prompt: str = Field(..., min_length=1)
+
+    def clamp(self) -> tuple[float, float, float, float]:
+        x0, y0, x1, y1 = (min(1.0, max(0.0, float(v))) for v in self.box)
+        return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
+
+
+def region_position(box: tuple[float, float, float, float]) -> str:
+    """'on the left', 'at the top right' ... from where the box sits."""
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    h = "left" if cx < 0.38 else "right" if cx > 0.62 else ""
+    v = "top" if cy < 0.33 else "bottom" if cy > 0.67 else ""
+    if h and v:
+        return f"at the {v} {h}"
+    if h:
+        return f"on the {h}"
+    if v:
+        return f"at the {v}"
+    return "in the center"
+
+
+def region_mask(box: tuple[float, float, float, float], w: int, h: int) -> bytes:
+    from PIL import ImageDraw, ImageFilter
+    m = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(m).rectangle([box[0] * w, box[1] * h, box[2] * w, box[3] * h], fill=255)
+    m = m.filter(ImageFilter.GaussianBlur(max(2, min(w, h) // 80)))
+    buf = io.BytesIO()
+    m.save(buf, "PNG")
+    return buf.getvalue()
+
+
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="그리고 싶은 내용")
     negative: str = ""
@@ -45,6 +78,8 @@ class GenerateRequest(BaseModel):
     translate: bool | None = Field(None, description="한국어 자동 번역 (비우면 설정값)")
     denoise: float | None = Field(None, ge=0.1, le=1.0,
                                   description="참고 이미지 1장을 다른 화풍으로 다시 그릴 때 바꾸는 정도 (낮을수록 원본 유지)")
+    regions: list[Region] = Field(default_factory=list, max_length=6,
+                                  description="영역별 프롬프트: box는 0~1 비율 [왼쪽, 위, 오른쪽, 아래]")
 
 
 ASPECTS = {"1:1": 1.0, "4:5": 0.8, "3:4": 0.75, "2:3": 2 / 3, "9:16": 9 / 16, "5:4": 1.25, "4:3": 4 / 3,
@@ -443,6 +478,13 @@ class Engine:
 
     def submit_generate(self, req: GenerateRequest) -> Job:
         decision = self.plan(req)
+        if req.regions:
+            for r in req.regions:
+                x0, y0, x1, y1 = r.clamp()
+                if (x1 - x0) * (y1 - y0) < 0.005:
+                    raise ValueError("영역이 너무 작아요")
+            decision["regions"] = len(req.regions)
+            decision["reasons"] = decision["reasons"] + [f"영역 {len(req.regions)}개 따로 그리기"]
         job = Job(id=uuid.uuid4().hex[:12], kind="generate", request=req.model_dump(), decision=decision)
         return self._enqueue(job)
 
@@ -991,6 +1033,15 @@ class Engine:
             prompt = apply_triggers(prompt, loras)
         if job.decision.get("character"):
             prompt = _with_identity(prompt, job.decision["character"], self.characters.get(job.decision["character"]))
+        regions = []
+        for r in req.regions:
+            box = r.clamp()
+            regions.append((box, await self._maybe_translate(job, r.prompt.strip(), model.family.id, req.translate)))
+        base_prompt = prompt
+        if regions:
+            # first pass already knows the layout; then each box is redrawn with its own prompt
+            sep = ", " if model.family.id == "illustrious" else ". "
+            prompt = prompt + sep + sep.join(f"{region_position(b)}: {t}" for b, t in regions)
         n = req.count
         for i in range(n):
             seed = req.seed + i if req.seed >= 0 else random.randint(0, 2**31 - 1)
@@ -1006,9 +1057,15 @@ class Engine:
                 graph, extra = workflows.txt2img(
                     model, prompt, negative, job.decision["width"], job.decision["height"], seed,
                     models_dir=self.settings.models_dir, steps=req.steps, cfg=req.cfg, loras=loras)
-            outs = await self.comfy.run(graph, self._progress(job, i / n, 1 / n))
+            span = 1 / n / (1 + len(regions))
+            outs = await self.comfy.run(graph, self._progress(job, i / n, span))
             data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+            for k, (box, text) in enumerate(regions, 1):
+                job.message = f"영역 {k}/{len(regions)} 그리는 중"
+                data = await self._draw_region(job, model, data, box, text, base_prompt, negative, seed + k, loras,
+                                               self._progress(job, i / n + span * k, span))
             rec = self.library.add(data, {
+                "regions": [{"box": list(b), "prompt": r.prompt} for (b, _t), r in zip(regions, req.regions)] or None,
                 "kind": "generate", "source": "gen-studio", "prompt": prompt_ko, "prompt_en": prompt if prompt != prompt_ko else None,
                 "negative": negative,
                 "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id,
@@ -1020,6 +1077,26 @@ class Engine:
                 "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             })
             job.result_ids.append(rec["id"])
+
+    async def _draw_region(self, job: Job, model, png: bytes, box, text: str, base_prompt: str, negative: str,
+                           seed: int, loras: list[dict], progress) -> bytes:
+        with Image.open(io.BytesIO(png)) as im:
+            w, h = im.size
+        img_name = await self.comfy.upload_image(png, f"region-{job.id}.png")
+        mask_name = await self.comfy.upload_image(region_mask(box, w, h), f"region-{job.id}-mask.png")
+        lw = {"loras": loras} if loras else {}
+        if model.family.encoder == "qwen21":
+            instruction = (f"In the white area of image 2 ({region_position(box)} of image 1), draw {text}. Make it fit the "
+                           "scene naturally: same lighting, perspective and style. Image 2 is a mask: change only its "
+                           "white area and keep everything else in image 1 exactly the same.")
+            graph, _ = workflows.masked_reference(model, img_name, mask_name, instruction, negative, seed, grow=0,
+                                                  models_dir=self.settings.models_dir, **lw)
+        else:
+            sep = ", " if model.family.id == "illustrious" else ". "
+            graph, _ = workflows.inpaint(model, img_name, mask_name, text + sep + base_prompt, negative, seed,
+                                         denoise=0.75, grow=0, models_dir=self.settings.models_dir, **lw)
+        outs = await self.comfy.run(graph, progress)
+        return await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
 
     async def _run_edit(self, job: Job) -> None:
         req = EditRequest(**job.request)
@@ -1247,7 +1324,8 @@ class Engine:
                 width=rec["width"], height=rec["height"], steps=rec.get("steps"), cfg=rec.get("cfg"),
                 references=[r for r in rec.get("ref_ids") or []
                             if not rec.get("character") or r not in (self.characters.get(rec["character"]) or {}).get("ref_ids", [])],
-                character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise")))
+                character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise"),
+                regions=rec.get("regions") or []))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
             if edit.get("mode") == "character_sheet":

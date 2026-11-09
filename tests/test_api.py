@@ -345,3 +345,24 @@ def test_diagnostics_report(settings, monkeypatch, tmp_path):
         t = c.get("/api/diagnostics").text
     assert "## ComfyUI" in t and "연결됨" in t and "최근 실패한 작업" in t and "out of memory" in t
     assert "도구: sam3" in t and "civ-SECRET-123456" not in t and "***" in t
+
+
+def test_regional_prompts(client, fake):
+    regions = [{"box": [0, 0.1, 0.45, 1], "prompt": "a woman in a red dress"},
+               {"box": [0.55, 0.1, 1, 1], "prompt": "a man in a navy suit"}]
+    j = client.post("/api/generate", json={"prompt": "two people in an office, photo", "aspect": "landscape",
+                                            "regions": regions}).json()
+    assert "영역 2개 따로 그리기" in j["decision"]["reasons"]
+    j = wait_job(client, j["id"])
+    assert j["status"] == "done", j["error"]
+    graphs = list(fake.prompts.values())[-3:]
+    first = next(n["inputs"]["text"] for n in graphs[0].values() if n["class_type"] == "CLIPTextEncode")
+    assert "on the left: a woman in a red dress" in first and "on the right: a man in a navy suit" in first
+    second = graphs[1]
+    assert any(n["class_type"] == "SetLatentNoiseMask" for n in second.values())
+    assert next(n["inputs"]["text"] for n in second.values() if n["class_type"] == "CLIPTextEncode").startswith("a woman in a red dress")
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert rec["regions"][1]["prompt"] == "a man in a navy suit" and (rec["width"], rec["height"]) == (1216, 832)
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert client.get(f"/api/images/{r['result_ids'][0]}").json()["regions"] == rec["regions"]
+    assert client.post("/api/generate", json={"prompt": "x", "regions": [{"box": [0, 0, 0.01, 0.01], "prompt": "y"}]}).status_code == 400
