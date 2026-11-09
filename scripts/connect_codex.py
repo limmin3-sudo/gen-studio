@@ -26,10 +26,10 @@ SECTION = "mcp_servers.gen_studio"
 
 
 def build_section(url: str, remote: bool) -> str:
-    lines = [f"[{SECTION}]", f'url = "{url}"']
+    lines = [f"[{SECTION}]", f'url = "{url}"', "enabled = true"]
     if remote:
         lines.append('bearer_token_env_var = "GEN_STUDIO_TOKEN"')
-    lines += ["startup_timeout_sec = 20", "tool_timeout_sec = 600"]
+    lines += ["startup_timeout_sec = 30", "tool_timeout_sec = 900"]
     return "\n".join(lines) + "\n"
 
 

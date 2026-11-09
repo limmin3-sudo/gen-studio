@@ -23,7 +23,8 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   for posters, signs and lettering) unless given.
 - edit_image: change an existing image. With a mask (white = area to change) only that area is redrawn;
   without a mask the whole image is lightly redrawn. fill='auto' lets the model decide what goes in the area.
-- Long jobs return a job_id; poll get_job_status, then get_image.
+- Calls wait up to wait_seconds (default 45, set 0 to return at once). If the job is not finished
+  they return a job_id: poll get_job_status(job_id, wait_seconds=30) until status is done, then get_image.
 Images are referenced by image_id.
 
 Writing prompts (important for quality):
@@ -85,7 +86,7 @@ def build_mcp(state: "State") -> MCPServer:
         negative: str = "",
         seed: int = -1,
         count: int = 1,
-        wait_seconds: int = 180,
+        wait_seconds: int = 45,
         include_image: bool = True,
     ):
         req = GenerateRequest(prompt=prompt, style=style, aspect=aspect, model=model, negative=negative,
@@ -108,7 +109,7 @@ def build_mcp(state: "State") -> MCPServer:
         denoise: float | None = None,
         model: str = "auto",
         seed: int = -1,
-        wait_seconds: int = 180,
+        wait_seconds: int = 45,
         include_image: bool = True,
     ):
         if not image_id:

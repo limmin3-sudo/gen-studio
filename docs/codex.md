@@ -11,8 +11,9 @@ Gen Studio는 `http://127.0.0.1:7860/mcp` 에서 MCP 서버를 엽니다. Codex 
    ```toml
    [mcp_servers.gen_studio]
    url = "http://127.0.0.1:7860/mcp"
-   startup_timeout_sec = 20
-   tool_timeout_sec = 600
+   enabled = true
+   startup_timeout_sec = 30
+   tool_timeout_sec = 900
    ```
 
 3. Codex 앱을 완전히 종료했다가 다시 켭니다.
@@ -20,7 +21,12 @@ Gen Studio는 `http://127.0.0.1:7860/mcp` 에서 MCP 서버를 엽니다. Codex 
    - "gen_studio로 비 오는 밤 골목에 서 있는 여자 실사 사진 세로로 만들어줘"
    - "방금 이미지 배경을 해변으로 바꿔줘"
 
-`tool_timeout_sec` 을 길게 둔 이유: 이미지 생성은 수십 초 걸릴 수 있어서, Codex가 기다리다 끊지 않게 하려는 것입니다.
+- `startup_timeout_sec`(기본 10초): 서버 연결·초기화 제한.
+- `tool_timeout_sec`(기본 60초): 도구 호출 한 번의 제한. 15분으로 늘려 둡니다.
+- 도구는 기본으로 최대 45초만 기다리고, 그 안에 안 끝나면 `job_id` 를 돌려줍니다.
+  Codex는 `get_job_status` → `get_image` 순서로 이어서 확인합니다. 그래서 기본 60초 설정에서도 끊기지 않습니다.
+- 플러그인으로 묶을 필요는 없습니다. `config.toml` 에 등록하는 것으로 충분합니다.
+- 설정을 바꾼 뒤에는 Codex 앱에서 MCP 서버를 다시 시작하거나 새 작업을 열어 연결을 확인하세요.
 
 ## 노트북 (집 PC의 Gen Studio를 원격으로)
 
@@ -31,8 +37,9 @@ Gen Studio는 `http://127.0.0.1:7860/mcp` 에서 MCP 서버를 엽니다. Codex 
 [mcp_servers.gen_studio]
 url = "https://home-pc.tailXXXX.ts.net/mcp"
 bearer_token_env_var = "GEN_STUDIO_TOKEN"
-startup_timeout_sec = 20
-tool_timeout_sec = 600
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 900
 ```
 
 토큰은 설정 파일에 직접 적지 않고 환경변수로 넣습니다. 노트북의 PowerShell에서:

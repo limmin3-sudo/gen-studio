@@ -44,3 +44,21 @@ def test_mcp_path_has_no_redirect(client):
     r = client.post("/mcp", headers=HEADERS, follow_redirects=False,
                     json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     assert r.status_code == 200, (r.status_code, r.headers.get("location"))
+
+
+def test_images_are_standard_mcp_image_content(client):
+    res = rpc(client, "tools/call", {"name": "generate_image", "arguments": {"prompt": "photo", "wait_seconds": 10}})
+    img = next(c for c in res["content"] if c["type"] == "image")
+    assert img["mimeType"] in ("image/jpeg", "image/png")
+    assert not img["data"].startswith("data:")
+    import base64
+    raw = base64.b64decode(img["data"])
+    assert raw[:3] == b"\xff\xd8\xff" or raw[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_wait_zero_returns_job_id_immediately(client):
+    res = rpc(client, "tools/call", {"name": "generate_image", "arguments": {"prompt": "photo", "wait_seconds": 0}})
+    info = json.loads(res["content"][0]["text"])
+    assert info["job_id"] and info["status"] in ("queued", "running", "done")
+    st = rpc(client, "tools/call", {"name": "get_job_status", "arguments": {"job_id": info["job_id"], "wait_seconds": 10}})
+    assert json.loads(st["content"][0]["text"])["status"] == "done"
