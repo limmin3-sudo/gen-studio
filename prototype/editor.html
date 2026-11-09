@@ -119,6 +119,15 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .ask b{font-weight:500;font-size:14.5px}
 .ask .opts{display:flex;flex-wrap:wrap;gap:6px}
 .pill.plain{background:var(--accent-soft);color:var(--accent);cursor:pointer}
+.pill.main{background:var(--ink);color:var(--ink-fg);cursor:pointer;font-weight:500}
+.pill.main:hover{opacity:.88}
+.switch{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--muted);cursor:pointer;user-select:none}
+.switch input{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:10px;background:var(--chip-hover);position:relative;cursor:pointer;flex:none;transition:background .15s;margin:0}
+.switch input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+.switch input:checked{background:var(--accent)}
+.switch input:checked::after{transform:translateX(16px)}
+.switch input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pane .switch{margin:0 0 12px 10px}
 .row[aria-expanded="false"] .chev{transform:rotate(180deg)}
 .note{font-size:13.5px;line-height:1.6;color:var(--muted);margin:0 0 12px}
 .badge{font-size:11px;padding:2px 7px;border-radius:9px;background:var(--chip);color:var(--muted);font-weight:500;vertical-align:2px;margin-left:6px}
@@ -354,6 +363,7 @@ function paintPane() {
         <span class="lbl"><b>${s.ko}${s.kids?` <small>(${s.kids.filter(k=>!S().hidden.includes(k.id)).length})</small>`:''}</b><small>${s.en}</small></span>
         ${s.kids ? ICON_CHEV : ''}</button>`;
     pane.innerHTML = `<h2>세그먼트 <button class="ghost" id="dlAll">${ICON_DL}모두 다운로드</button></h2>
+      <label class="switch"><input type="checkbox" id="autoFillToggle" ${autoFillDefault ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>
       <ul class="segs">${visibleSegs().map(s => `<li>${row(s)}${delBtn(s)}${s.kids && expanded[s.id] ? `<ul>${s.kids.filter(k => !S().hidden.includes(k.id)).map(k => `<li>${row(k, true)}${delBtn(k)}</li>`).join('')}</ul>` : ''}</li>`).join('')}</ul>`;
   } else if (tool === 'brush') {
     pane.innerHTML = `<h2>마스크 브러시</h2>
@@ -406,9 +416,11 @@ function paintRoute() {
   if (pending) {
     const sug = pending.id === 'background' ? FILL_SUG_BG : FILL_SUG;
     route.innerHTML = `<div class="ask"><b>${pending.name} 삭제 · 그 자리를 어떻게 채울까요? 아래에 입력하거나 골라 주세요.</b>
-      <div class="opts"><button type="button" class="pill plain" id="fillPlain">비워두기 (주변에 맞춰 자연스럽게 · LaMa)</button>
+      <div class="opts"><button type="button" class="pill main" id="fillAuto">모델이 알아서 채우기</button>
+      <button type="button" class="pill plain" id="fillPlain">비워두기 (주변에 맞춰 자연스럽게 · LaMa)</button>
       ${sug.map(s => `<button type="button" class="pill sug" data-sug="${s}">${s}</button>`).join('')}
       <button type="button" class="pill sug" id="cancelDel">삭제 취소</button></div>
+      <label class="switch"><input type="checkbox" id="autoFillDefault" ${autoFillDefault ? 'checked' : ''}><span>앞으로는 묻지 않고 항상 모델이 알아서 채우기</span></label>
       ${t.trim() ? `<span class="pill auto">자동 선택 → <b>삭제한 자리 다시 그리기</b> · ${SRC.model}</span>` : ''}</div>`;
     sendBtn.disabled = !t.trim() || busy;
     return;
@@ -480,8 +492,29 @@ function startDelete(id) {
   if (id === 'background') preview.bg = null; else preview.hidden.push(...membersOf(id));
   pending = {id, name, members: membersOf(id), preview};
   sel = null; hover = null; promptIn.value = '';
+  if (autoFillDefault) { fillAuto(); return; }
   promptIn.placeholder = `${name} 자리에 무엇을 그릴지 입력하세요`;
   paintScene(); paintPane(); paintRoute(); promptIn.focus();
+}
+function fillAuto() {
+  const p = endPending(); paintScene(p.preview);
+  runBusy(`삭제한 자리를 모델이 알아서 채우는 중 · ${SRC.model}`, () => {
+    const n = clone(p.preview);
+    if (p.id === 'background') { n.bg = 'studio'; commit(n, '배경 자리: 자동 채우기'); return; }
+    n.hidden = n.hidden.filter(l => !p.members.includes(l));
+    const c = VARIANTS[versions.length % VARIANTS.length];
+    p.members.filter(l => !['face','hands','legs'].includes(l) || p.id === l).forEach(l => n.colors[l] = c);
+    commit(n, `${p.name} 자리: 자동 채우기`);
+    toast('모델이 주변 그림을 보고 어울리는 것을 그려 넣었어요. 미리보기에서는 색만 바뀝니다.');
+  });
+}
+let autoFillDefault = false;
+try { autoFillDefault = localStorage.getItem('gs.autoFill') === '1'; } catch (e) {}
+function setAutoFill(on) {
+  autoFillDefault = on;
+  try { localStorage.setItem('gs.autoFill', on ? '1' : '0'); } catch (e) {}
+  document.querySelectorAll('#autoFillToggle,#autoFillDefault').forEach(x => x.checked = on);
+  toast(on ? '이제 삭제하면 바로 모델이 알아서 채웁니다' : '이제 삭제하면 채울 내용을 물어봅니다');
 }
 function endPending() { const p = pending; pending = null; promptIn.placeholder = DEFAULT_PH; return p; }
 function cancelDelete() { endPending(); paintScene(); paintPane(); paintRoute(); toast('삭제를 취소했어요'); }
@@ -601,10 +634,13 @@ route.addEventListener('click', e => {
   if (e.target.closest('#clearSel')) { sel = null; applyHighlight(); paintRoute(); return; }
   if (e.target.closest('#clearBrush')) { clearBrush(); return; }
   if (e.target.closest('#fillPlain')) { if (!busy) fillPlain(); return; }
+  if (e.target.closest('#fillAuto')) { if (!busy) fillAuto(); return; }
   if (e.target.closest('#cancelDel')) { if (!busy) cancelDelete(); return; }
   const s = e.target.closest('[data-sug]'); if (s) { promptIn.value = s.dataset.sug; paintRoute(); promptIn.focus(); }
 });
 promptIn.addEventListener('input', paintRoute);
+route.addEventListener('change', e => { if (e.target.id === 'autoFillDefault') setAutoFill(e.target.checked); });
+pane.addEventListener('change', e => { if (e.target.id === 'autoFillToggle') setAutoFill(e.target.checked); });
 $('#form').addEventListener('submit', e => { e.preventDefault(); const t = promptIn.value; if (!t.trim() || busy) return; promptIn.value = ''; if (pending) fillWith(t); else applyEdit(t); });
 
 $('#regenBtn').onclick = () => {
