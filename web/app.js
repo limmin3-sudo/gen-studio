@@ -323,6 +323,7 @@ const Editor = (() => {
   let expandAspect = '3:4', expandAnchor = 'top';
   const qwenReady = () => MODELS.some(m => m.family === 'qwen21' && m.installed !== false);
   const REMOVE = /지워|지우|제거|없애|빼\s*줘|remove|erase|delete/i;
+  const ENLARGE_RX = /키워|키우|크게|커지|늘려|늘리|길게|굵게|두껍|풍성|볼륨|넓게|부풀|bigger|larger|longer|thicker|fuller|wider|taller|enlarge|increase|grow/i;
   const EXPAND_RX = /전신|발끝|발까지|신발까지|다리까지|무릎까지|허벅지까지|줌\s*아웃|멀리서|더 넓게|full[\s-]?body|zoom(ed)?[\s-]?out|wider shot/i;
   bindEnter(promptEl, form);
   promptEl.addEventListener('input', paintRoute);
@@ -592,7 +593,8 @@ const Editor = (() => {
       h += `<span class="pill sel">@${esc(selName())}<button type="button" data-clear-mask aria-label="칠한 영역 지우기"><svg class="i" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>`;
       if (!t) h += SUG_MASK.map(s => `<button type="button" class="pill sug" data-sug="${s}">${s}</button>`).join('');
       else if (REMOVE.test(t)) h += `<span class="pill auto">→ <b>삭제</b> 후 채울 내용을 물어봅니다</span>`;
-      else h += `<span class="pill auto">자동 선택 → <b>부분 다시 그리기</b> · ${esc(modelName)} <span class="hint">(원본과 같은 모델)</span></span>`;
+      else h += `<span class="pill auto">자동 선택 → <b>부분 다시 그리기</b> · ${esc(modelName)} <span class="hint">(원본과 같은 모델)</span></span>`
+        + (ENLARGE_RX.test(t) ? `<span class="hint">커지는 요청이라 선택 영역을 주변까지 넉넉하게 넓혀서 그려요</span>` : '');
     } else if (t && EXPAND_RX.test(t)) {
       h += `<span class="pill auto">자동 선택 → <b>캔버스 늘리기</b> · 원본은 위에 두고 아래로 늘려서 그려요</span><span class="hint">화면 밖을 보여달라는 요청은 같은 크기 안에서 고칠 수 없어서 캔버스를 늘립니다</span>`;
     } else if (t) {

@@ -206,6 +206,30 @@ def outpaint(model: ModelSpec, image_name: str, pads: dict, prompt: str, negativ
     return g.nodes, {"final_prompt": text}
 
 
+def masked_reference(model: ModelSpec, image_name: str, mask_name: str, instruction: str, negative: str, seed: int, *,
+                     grow: int = 12, models_dir: Path | None = None, cfg: float | None = None,
+                     prefix: str = "gen-studio/edit", loras: list[dict] | None = None) -> tuple[dict, dict]:
+    """Qwen-Image 2.1 edit that sees the whole picture plus the mask (image 2) and only lands inside the mask.
+
+    Keeps the person: the model edits with the original in view, and everything outside the mask is pasted back.
+    """
+    g = Graph()
+    ms, c, v = _loaders(g, model, models_dir, loras)
+    src = out(g.add("LoadImage", image=image_name))
+    mask_img = out(g.add("LoadImage", image=mask_name))
+    mask = out(g.add("LoadImageMask", image=mask_name, channel="red"))
+    if grow:
+        mask = out(g.add("GrowMask", mask=mask, expand=int(grow), tapered_corners=True))
+    neg_text = ", ".join(x for x in (negative.strip(), model.family.negative_default) if x)
+    enc = g.add("TextEncodeQwenImage21", clip=c, prompt=instruction, negative_prompt=neg_text, vae=v, resolution=0,
+                **{"images.image_1": src, "images.image_2": mask_img})
+    s = _sampler(g, model, ms, out(enc, 0), out(enc, 1), out(enc, 2), seed, 1.0, None, cfg)
+    img = out(g.add("VAEDecode", samples=s, vae=v))
+    merged = out(g.add("ImageCompositeMasked", destination=src, source=img, x=0, y=0, resize_source=True, mask=mask))
+    g.add("SaveImage", filename_prefix=prefix, images=merged)
+    return g.nodes, {"final_prompt": instruction}
+
+
 def reference(model: ModelSpec, image_names: list[str], prompt: str, negative: str, seed: int, *,
               width: int | None = None, height: int | None = None, models_dir: Path | None = None,
               cfg: float | None = None, prefix: str = "gen-studio/ref", loras: list[dict] | None = None) -> tuple[dict, dict]:

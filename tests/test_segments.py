@@ -122,3 +122,43 @@ def test_mcp_apps_panel(client):
     assert st["image"].startswith("data:image/jpeg;base64,") and len(st["segments"]) == 6
     assert st["segments"][0]["mask"].startswith("data:image/png;base64,") and st["segments"][0]["thumb"]
     assert st["versions"][0]["id"] == img
+
+
+def test_masked_edits_keep_the_person(client, fake):
+    from genstudio.jobs import qwen_mask_instruction
+    # Qwen source: instruction edit with the picture and the mask, pasted back inside the mask only
+    j = wait_job(client, client.post("/api/generate", json={"prompt": '포스터 "SALE"'}).json()["id"])
+    qimg = j["result_ids"][0]
+    segment(client, qimg)
+    e = wait_job(client, client.post("/api/edit", json={"image_id": qimg, "segments": ["woman"],
+                                                         "prompt": "허벅지를 더 탄탄하게"}).json()["id"])
+    assert e["status"] == "done", e["error"]
+    g = last_graph(fake)
+    enc = nodes(g, "TextEncodeQwenImage21")[0]
+    assert {"images.image_1", "images.image_2"} <= set(enc) and "허벅지를 더 탄탄하게" in enc["prompt"]
+    assert "the woman" in enc["prompt"] and "Keep the same person" in enc["prompt"]
+    assert "SetLatentNoiseMask" not in [n["class_type"] for n in g.values()]
+    assert nodes(g, "ImageCompositeMasked")[0]["resize_source"] is True
+    assert "Remove the epaulets" in qwen_mask_instruction("", "clear", ["epaulets"])
+
+    # other models: a modification keeps the original (denoise 0.6, original prompt + change)
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman in a cafe"}).json()["id"])
+    zimg = j["result_ids"][0]
+    segment(client, zimg)
+    wait_job(client, client.post("/api/edit", json={"image_id": zimg, "segments": ["woman"], "prompt": "toned thighs, slightly firmer"}).json()["id"])
+    g = last_graph(fake)
+    assert nodes(g, "KSampler")[0]["denoise"] == 0.6
+    assert nodes(g, "CLIPTextEncode")[0]["text"].startswith("photo of a woman in a cafe, toned thighs")
+    # a new thing in place of the old one is still drawn fresh
+    wait_job(client, client.post("/api/edit", json={"image_id": zimg, "segments": ["white collared shirt"], "prompt": "red leather jacket"}).json()["id"])
+    assert nodes(last_graph(fake), "KSampler")[0]["denoise"] == 1.0
+
+
+def test_bigger_requests_widen_the_mask(client, fake):
+    from genstudio.jobs import mask_grow
+    assert mask_grow("볼륨 키워줘", 1024, 1820) == 81 and mask_grow("빨간색으로", 1024, 1024) == 12
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman"}).json()["id"])
+    img = j["result_ids"][0]
+    segment(client, img)
+    wait_job(client, client.post("/api/edit", json={"image_id": img, "segments": ["white collared shirt"], "prompt": "가슴 볼륨 키워줘"}).json()["id"])
+    assert nodes(last_graph(fake), "GrowMask")[0]["expand"] == 81

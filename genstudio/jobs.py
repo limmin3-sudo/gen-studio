@@ -91,6 +91,38 @@ _EXPAND_RULES = [
 ]
 
 
+# a change to what is already there ("thighs firmer", "bigger", "brighter") rather than a new thing in its place
+MODIFY_RX = _re.compile(r"더|좀|조금|약간|살짝|하게|키워|줄여|늘려|크게|작게|길게|짧게|진하게|연하게|밝게|어둡게|탄탄|날씬|"
+                        r"통통|굵게|얇게|볼륨|bigger|smaller|larger|more |less |slightly|thicker|thinner|longer|shorter|"
+                        r"brighter|darker|firmer|toned|slimmer|fuller", _re.I)
+
+
+# requests that make something bigger need room around the selection, or the new shape is cut at its edge
+ENLARGE_RX = _re.compile(r"키워|키우|크게|커지|늘려|늘리|길게|굵게|두껍|풍성|볼륨|넓게|부풀|bigger|larger|longer|thicker|"
+                         r"fuller|wider|taller|enlarge|increase|grow", _re.I)
+
+
+def mask_grow(text: str, width: int, height: int) -> int:
+    """Pixels to widen the mask by: generous for 'make it bigger', small otherwise."""
+    if ENLARGE_RX.search(text or ""):
+        return max(32, int(min(width, height) * 0.08))
+    return 12
+
+
+def qwen_mask_instruction(text: str, fill: str, names: list[str]) -> str:
+    what = f"the {', '.join(names)}" if names else "the white area of image 2"
+    if fill == "clear":
+        return (f"Remove {what} from image 1 and fill that area with the surrounding background so it looks untouched. "
+                "Image 2 is a mask: change only its white area, keep everything else in image 1 exactly the same.")
+    if fill == "auto":
+        return (f"Redraw {what} in image 1 so it fits the picture naturally. "
+                "Image 2 is a mask: change only its white area, keep everything else in image 1 exactly the same.")
+    room = (" The white area includes some space around it so the changed shape can grow into it; fill any leftover "
+            "space with the surrounding background.") if ENLARGE_RX.search(text or "") else ""
+    return (f"In image 1, {text.strip()} (this concerns {what}). Image 2 is a mask: change only its white area.{room} "
+            "Keep the same person, face, pose, clothing elsewhere, background and lighting exactly as in image 1.")
+
+
 def expand_intent(text: str, w: int, h: int) -> tuple[str, str, str] | None:
     """(aspect, anchor, prompt addition) when the request asks to see more than the frame holds."""
     for rx, aspect, extra in _EXPAND_RULES:
@@ -537,8 +569,20 @@ class Engine:
             mask = _normalize_mask(req.mask_png, (src["width"], src["height"]))
             mask_bytes = mask
             mask_name = await self.comfy.upload_image(mask, f"{src['id']}-mask-{job.id}.png")
-            graph, extra = workflows.inpaint(model, image_name, mask_name, prompt, req.negative, seed,
-                                             denoise=req.denoise or 1.0, models_dir=self.settings.models_dir, **lw)
+            if model.family.encoder == "qwen21":
+                names = self._segment_names(src["id"], req0.segments)
+                graph, extra = workflows.masked_reference(
+                    model, image_name, mask_name, qwen_mask_instruction(req0.prompt, req.fill, names), req.negative, seed,
+                    grow=mask_grow(req0.prompt, src["width"], src["height"]), models_dir=self.settings.models_dir, **lw)
+            else:
+                denoise = req.denoise
+                if req.fill == "prompt" and denoise is None and MODIFY_RX.search(req0.prompt):
+                    # keep the shape and identity; add the change on top of the original description
+                    prompt = ", ".join(x for x in (base_prompt, req.prompt.strip()) if x)
+                    denoise = 0.6
+                graph, extra = workflows.inpaint(model, image_name, mask_name, prompt, req.negative, seed,
+                                                 denoise=denoise or 1.0, grow=mask_grow(req0.prompt, src["width"], src["height"]),
+                                                 models_dir=self.settings.models_dir, **lw)
         elif req.mode == "reference":
             mask_bytes = None
             refs = await self._upload_refs(job.decision.get("ref_ids") or [])
@@ -630,6 +674,19 @@ class Engine:
         detections = [(infos[i], per_label.get(i, [])) for i in range(len(infos))]
         segs = self.segments.save_detections(req.image_id, detections, "labels" if req.labels else "auto")
         job.result = {"segments": segs, "labels": [i["label"] for i in infos]}
+
+    def _segment_names(self, image_id: str, keys: list[str]) -> list[str]:
+        if not keys:
+            return []
+        try:
+            segs = self.segments.resolve(image_id, keys)
+        except KeyError:
+            return []
+        names: list[str] = []
+        for s in segs:
+            if s["label"] not in ("selection",) and s["label"] not in names:
+                names.append(s["label"])
+        return names
 
     async def _upload_refs(self, ids: list[str]) -> list[str]:
         names = []
