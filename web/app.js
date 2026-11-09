@@ -82,16 +82,18 @@ function markRecommended(sel, recId, autoLabel = '자동') {
 }
 
 /* --------------------------------------------------------------- router */
-const VIEWS = {generate: $('#genView'), edit: $('#editView'), gallery: $('#galleryView')};
+const VIEWS = {generate: $('#genView'), edit: $('#editView'), gallery: $('#galleryView'), loras: $('#lorasView')};
 function route() {
   const h = location.hash.slice(1);
   let view = 'generate', arg = null;
   if (h.startsWith('edit=')) { view = 'edit'; arg = h.slice(5); }
   else if (h === 'gallery') view = 'gallery';
+  else if (h === 'loras') view = 'loras';
   for (const [k, el] of Object.entries(VIEWS)) el.hidden = k !== view;
   document.querySelectorAll('.tabs a').forEach(a => { if (a.dataset.view === view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   if (view === 'generate') Gen.show();
   if (view === 'gallery') Gallery.show();
+  if (view === 'loras') LoraPage.show();
   if (view === 'edit') Editor.open(arg);
 }
 window.addEventListener('hashchange', route);
@@ -108,7 +110,24 @@ const Gen = (() => {
   const sels = {style: $('#genStyle'), aspect: $('#genAspect'), count: $('#genCount'), model: $('#genModel')};
   const lbl = {style: $('#styleLbl'), aspect: $('#aspectLbl'), count: $('#countLbl'), model: $('#modelLbl')};
   const jobs = [];      // {id, status, progress, message, result_ids, error, prompt}
-  let recent = [], timer, refs = store.get('gen.refs', []), chars = [];
+  let recent = [], timer, refs = store.get('gen.refs', []), chars = [], loras = [], picked = store.get('gen.loras', []);
+  const FAM = {zimage: 'Z-Image', illustrious: 'Illustrious', qwen21: 'Qwen 2.1', wan22: 'Wan 2.2'};
+  async function loadLoras() { try { loras = (await api.get('/api/loras')).loras; } catch { loras = []; } picked = picked.filter(p => loras.some(l => l.id === p.id)); renderLoras(); }
+  function savePicked() { store.set('gen.loras', picked); renderLoras(); preview(); }
+  function renderLoras() {
+    $('#genLoras').innerHTML = picked.map(p => { const l = loras.find(x => x.id === p.id); return l ? `<span class="lchip" title="${esc(FAM[l.family] || '')}용">${esc(l.name)}<input type="range" min="0.1" max="1.5" step="0.05" value="${p.strength}" data-lstr="${p.id}" aria-label="세기"><span>${Number(p.strength).toFixed(2)}</span><button type="button" data-lrm="${p.id}" aria-label="빼기">×</button></span>` : ''; }).join('');
+  }
+  function renderPick(fam) {
+    const el = $('#loraPick');
+    el.innerHTML = loras.length ? loras.map(l => `<button type="button" data-lpick="${l.id}" class="${fam && l.family && l.family !== fam ? 'dim' : ''}" ${l.family ? '' : 'disabled'}><b>${esc(l.name)}</b><span class="fam">${esc(FAM[l.family] || '계열 모름')}${l.triggers?.length ? ' · ' + esc(l.triggers.join(', ')) : ''}${fam && l.family && l.family !== fam ? ' · 고르면 모델이 바뀌어요' : ''}</span></button>`).join('')
+      : '<span class="hint">등록된 LoRA가 없어요. 위쪽 <a href="#loras">LoRA</a> 탭에서 추가하세요.</span>';
+  }
+  $('#addLora').onclick = async () => { const el = $('#loraPick'); if (!el.hidden) { el.hidden = true; return; } await loadLoras(); const fam = (MODELS.find(m => m.id === lastRoute?.model_id) || {}).family; renderPick(fam); el.hidden = false; };
+  $('#loraPick').addEventListener('click', e => { const b = e.target.closest('[data-lpick]'); if (!b) return; const l = loras.find(x => x.id === b.dataset.lpick); if (!picked.some(p => p.id === l.id)) picked.push({id: l.id, strength: l.strength || 0.8}); $('#loraPick').hidden = true; savePicked(); });
+  $('#genLoras').addEventListener('input', e => { const id = e.target.dataset.lstr; if (!id) return; const p = picked.find(x => x.id === id); p.strength = +e.target.value; e.target.nextElementSibling.textContent = p.strength.toFixed(2); store.set('gen.loras', picked); });
+  $('#genLoras').addEventListener('change', () => preview());
+  $('#genLoras').addEventListener('click', e => { const b = e.target.closest('[data-lrm]'); if (b) { picked = picked.filter(p => p.id !== b.dataset.lrm); savePicked(); } });
+  let lastRoute = null;
   const charSel = $('#genChar'), refsEl = $('#genRefs');
   async function loadChars() {
     try { chars = await api.get('/api/characters'); } catch { chars = []; }
@@ -148,7 +167,8 @@ const Gen = (() => {
 
   function body() {
     return {prompt: prompt.value.trim(), style: sels.style.value, aspect: sels.aspect.value, count: +sels.count.value,
-            model: sels.model.value, character: charSel.value || null, references: refs};
+            model: sels.model.value, character: charSel.value || null, references: refs,
+            loras: picked.map(p => ({name: p.id, strength: p.strength}))};
   }
   async function preview() {
     const b = body();
@@ -160,7 +180,14 @@ const Gen = (() => {
     if (!b.prompt) { routeEl.innerHTML = `<span class="hint">한국어로 써도 됩니다. "실사", "반실사", "포스터", "세로" 같은 말을 넣으면 그에 맞춰 고릅니다. 이미지에 넣을 글자는 "따옴표"로 감싸세요.</span>`; return; }
     try {
       const d = await api.post('/api/route', {...b, model: 'auto'});
+      lastRoute = d;
       markRecommended(sels.model, d.model_id);
+      const lf = [...new Set(picked.map(p => (loras.find(l => l.id === p.id) || {}).family).filter(Boolean))];
+      if (lf.length && b.model === 'auto' && (MODELS.find(m => m.id === d.model_id) || {}).family !== lf[0]) {
+        const m = MODELS.find(x => x.family === lf[0] && x.installed !== false) || MODELS.find(x => x.family === lf[0]);
+        routeEl.innerHTML = `<span class="pill auto">LoRA에 맞춰 → <b>${esc(m ? m.name : lf[0])}</b> · ${d.width}×${d.height}</span><span class="hint">LoRA가 없으면 ${esc(d.model_name)}을(를) 골랐을 거예요</span>`;
+        return;
+      }
       if (b.model !== 'auto' && b.model !== d.model_id) {
         const chosen = MODELS.find(m => m.id === b.model);
         routeEl.innerHTML = `<span class="pill auto">직접 선택 → <b>${esc(chosen ? chosen.name : b.model)}</b></span><span class="hint">이 요청의 추천은 ${esc(d.model_name)} (${esc(d.reasons.join(', '))})</span>`;
@@ -201,7 +228,7 @@ const Gen = (() => {
     const c = e.target.closest('[data-cancel]'); if (!c) return;
     await api.post(`/api/jobs/${c.dataset.cancel}/cancel`).catch(() => {}); toast('취소를 요청했어요');
   });
-  return {show() { syncLabels(); loadChars().then(preview); renderRefs(); loadRecent(); autoGrow(prompt); },
+  return {show() { syncLabels(); loadChars().then(preview); loadLoras(); renderRefs(); loadRecent(); autoGrow(prompt); },
           addRef(id) { if (!refs.includes(id)) setRefs([...refs, id]); }};
 })();
 
@@ -215,6 +242,53 @@ const Gallery = (() => {
     grid.innerHTML = items.length ? items.map(r => `<a class="card" href="#edit=${r.id}"><img loading="lazy" src="${thumbUrl(r.id)}" alt=""><span class="cap">${esc(r.kind === 'import' ? '불러온 이미지 · ' + (r.original_name || '') : r.prompt || '')}</span></a>`).join('')
       : `<div class="empty" style="grid-column:1/-1"><b>아직 이미지가 없어요</b><span>생성 탭에서 만들거나, 이미지를 이 창에 끌어다 놓으세요.</span></div>`;
   }
+  return {show};
+})();
+
+/* ================================================================ LoRA */
+const LoraPage = (() => {
+  const FAM = {zimage: 'Z-Image (실사)', illustrious: 'Illustrious·SDXL (반실사)', qwen21: 'Qwen-Image 2.1', wan22: 'Wan 2.2'};
+  let poll = null;
+  async function show() {
+    let d; try { d = await api.get('/api/loras'); } catch (e) { toast(e.message); return; }
+    $('#loraCount').textContent = d.loras.length ? `${d.loras.length}개` : '';
+    $('#loraDl').innerHTML = d.downloads.filter(x => x.status !== 'done').map(x => `<p class="hint">${x.status === 'error' ? `⚠ ${esc(x.file)}: ${esc(x.error)}` : `받는 중: ${esc(x.file)} ${x.total ? Math.round(x.done / x.total * 100) : 0}%`}</p>`).join('');
+    $('#loraGrid').innerHTML = d.loras.map(l => `<div class="lcard" data-id="${esc(l.id)}">
+      <div class="pv" style="${l.preview ? `background-image:url('${esc(l.preview)}')` : ''}"></div>
+      <div><h4>${esc(l.name)}</h4><span class="fam ${l.family ? '' : 'unk'}">${esc(FAM[l.family] || '계열을 골라 주세요')}</span>
+        ${l.present === false ? '<p class="hint" style="color:var(--danger)">파일이 폴더에 없어요</p>' : ''}
+        <label>계열<select data-f="family"><option value="">모름</option>${Object.entries(FAM).map(([k, v]) => `<option value="${k}" ${k === l.family ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>트리거 단어 (쉼표로 구분)<input type="text" data-f="triggers" value="${esc((l.triggers || []).join(', '))}"></label>
+        <label>기본 세기 <b>${Number(l.strength).toFixed(2)}</b><input type="range" min="0.1" max="1.5" step="0.05" data-f="strength" value="${l.strength}"></label>
+        <div class="row2">${l.civitai?.url ? `<a class="hint" href="${esc(l.civitai.url)}" target="_blank" rel="noopener">Civitai</a>` : ''}<span class="hint">${esc(l.note || '')}</span><div class="spacer"></div><button class="ghost" data-del>삭제</button></div>
+      </div></div>`).join('') || '<div class="empty" style="grid-column:1/-1"><b>아직 LoRA가 없어요</b><span>Civitai 주소를 붙여넣거나, .safetensors 파일을 넣거나, ComfyUI/models/loras 폴더에 넣고 "폴더 다시 읽기"를 누르세요.</span></div>';
+    clearTimeout(poll);
+    if (d.downloads.some(x => x.status === 'running')) poll = setTimeout(show, 1000);
+  }
+  $('#loraAdd').onclick = async () => {
+    const url = $('#loraUrl').value.trim(); if (!url) return;
+    try { await api.post('/api/loras/civitai', {url}); $('#loraUrl').value = ''; toast('받기 시작했어요'); show(); } catch (e) { toast(e.message, 5000); }
+  };
+  $('#loraScan').onclick = async () => { const r = await api.post('/api/loras/scan'); toast(r.added.length ? `${r.added.length}개를 새로 찾았어요` : '새 파일이 없어요'); show(); };
+  $('#loraFileBtn').onclick = () => $('#loraFile').click();
+  $('#loraFile').onchange = async e => {
+    for (const f of e.target.files) { const fd = new FormData(); fd.append('file', f, f.name); try { await req('POST', '/api/loras/upload', fd); } catch (err) { toast(err.message, 5000); } }
+    e.target.value = ''; show();
+  };
+  $('#loraGrid').addEventListener('change', async e => {
+    const card = e.target.closest('[data-id]'), f = e.target.dataset.f; if (!card || !f) return;
+    let v = e.target.value;
+    if (f === 'triggers') v = v.split(',').map(x => x.trim()).filter(Boolean);
+    if (f === 'strength') v = +v;
+    try { await req('PATCH', `/api/loras/${card.dataset.id}`, {[f]: v || null}); show(); } catch (err) { toast(err.message); }
+  });
+  let delArm = '';
+  $('#loraGrid').addEventListener('click', async e => {
+    if (!e.target.closest('[data-del]')) return;
+    const id = e.target.closest('[data-id]').dataset.id;
+    if (delArm !== id) { delArm = id; toast('한 번 더 누르면 목록과 파일에서 삭제해요'); setTimeout(() => delArm = '', 3000); return; }
+    await api.del(`/api/loras/${id}?delete_file=true`); toast('삭제했어요'); show();
+  });
   return {show};
 })();
 

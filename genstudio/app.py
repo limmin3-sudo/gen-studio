@@ -240,6 +240,41 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         return Response(buf.getvalue(), media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="{image_id}-segments.zip"'})
 
+    # ----------------------------------------------------------------- LoRAs
+    @app.get("/api/loras")
+    async def loras_list():
+        return {"loras": engine.loras.list(), "downloads": list(engine.loras.downloads.values()),
+                "folder": str(engine.loras.dir) if engine.loras.dir else None}
+
+    @app.post("/api/loras/civitai")
+    async def loras_civitai(body: dict):
+        try:
+            return {"download_id": await engine.loras.add_from_civitai(body.get("url", ""))}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/loras/upload")
+    async def loras_upload(file: UploadFile = File(...)):
+        try:
+            return await engine.loras.add_file(file.filename or "lora.safetensors", await file.read())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/loras/scan")
+    async def loras_scan():
+        return {"added": await engine.loras.scan()}
+
+    @app.patch("/api/loras/{lid}")
+    async def loras_update(lid: str, body: dict):
+        try:
+            return engine.loras.update(lid, **body)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    @app.delete("/api/loras/{lid}")
+    async def loras_delete(lid: str, delete_file: bool = False):
+        return {"deleted": engine.loras.remove(lid, delete_file)}
+
     @app.post("/api/images/{image_id}/regenerate")
     async def regenerate(image_id: str):
         try:

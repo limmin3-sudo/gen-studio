@@ -75,6 +75,7 @@ Codex 앱이 패널을 띄우는지는 앱 버전에 따라 다릅니다. 한 �
 | `segment_image` | 부분(사람, 머리카락, 옷 등) 찾기. 번호를 칠한 이미지와 목록을 돌려줌. 점(`points`)으로 클릭 선택도 가능 |
 | `open_editor` | 대화창 안 세그먼트 편집 패널 (지원하지 않으면 번호 이미지와 링크) |
 | `create_character` / `list_characters` | 캐릭터 등록과 목록. 이름은 대충 불러도 찾음 |
+| `list_loras` / `add_lora` | LoRA 목록과 추가(Civitai 주소 또는 파일). `generate_image`·`edit_image` 에 `loras=[{"name": ..., "strength": 0.8}]` |
 | `export_image` | 원하는 폴더에 webp/png/jpg로 저장 (크기 지정, 덮어쓰기 확인) |
 
 결과 이미지는 Gen Studio 편집기에서도 바로 열립니다. 도구 결과의 `editor_url` 을 브라우저로 여세요.

@@ -187,6 +187,24 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .btn.primary{background:var(--ink);color:var(--ink-fg)}
 .btn svg.i{width:17px;height:17px}
 
+.lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.lcard{display:grid;grid-template-columns:72px minmax(0,1fr);gap:12px;padding:12px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.lcard .pv{width:72px;height:96px;border-radius:8px;background:var(--chip) center/cover no-repeat}
+.lcard h4{margin:0 0 4px;font-size:14.5px;font-weight:600;word-break:break-word}
+.lcard .fam{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:9px;background:var(--accent-soft);color:var(--accent);margin-bottom:6px}
+.lcard .fam.unk{background:var(--chip);color:var(--danger)}
+.lcard label{display:grid;gap:3px;font-size:12px;color:var(--muted);margin-top:6px}
+.lcard input[type=text],.lcard select{height:30px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 8px;font:inherit;font-size:13px}
+.lcard input[type=range]{accent-color:var(--accent)}
+.lcard .row2{display:flex;gap:8px;align-items:center;margin-top:8px}
+.lpick{display:grid;gap:4px;max-height:240px;overflow:auto;padding:8px;border-radius:12px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);margin-inline:8px}
+.lpick button{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;text-align:left}
+.lpick button:hover{background:var(--chip)}
+.lpick .fam{font-size:11px;color:var(--muted)}
+.lpick .dim{opacity:.55}
+.lchip{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 6px 0 12px;border-radius:17px;background:var(--accent-soft);color:var(--accent);font-size:13px;font-weight:500}
+.lchip input{width:80px;accent-color:var(--accent)}
+.lchip button{width:22px;height:22px;border-radius:50%}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);opacity:0;pointer-events:none;
   background:var(--ink);color:var(--ink-fg);padding:10px 16px;border-radius:10px;font-size:14px;max-width:min(560px,calc(100vw - 32px));transition:.2s;z-index:20;white-space:pre-line}
 .toast.show{opacity:1;transform:translate(-50%,0)}

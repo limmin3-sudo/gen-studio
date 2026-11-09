@@ -38,6 +38,7 @@ class GenerateRequest(BaseModel):
     cfg: float | None = Field(None, ge=0, le=20)
     character: str | None = Field(None, description="등록한 캐릭터 이름 또는 id")
     references: list[str] = Field(default_factory=list, description="참고 이미지 id (최대 10장)")
+    loras: list[dict] = Field(default_factory=list, description="[{name, strength}] 적용할 LoRA")
 
 
 ASPECTS = {"1:1": 1.0, "4:5": 0.8, "3:4": 0.75, "2:3": 2 / 3, "9:16": 9 / 16, "5:4": 1.25, "4:3": 4 / 3,
@@ -65,6 +66,7 @@ class EditRequest(BaseModel):
     anchor: Literal["center", "top", "bottom", "left", "right"] = "center"
     pads: dict[str, int] | None = None
     segments: list[str] = Field(default_factory=list, description="세그먼트 id나 이름. 마스크 대신 쓸 수 있음")
+    loras: list[dict] = Field(default_factory=list, description="[{name, strength}] 적용할 LoRA")
 
 
 class SegmentRequest(BaseModel):
@@ -139,6 +141,9 @@ class Engine:
         self.settings = settings
         self.characters = characters or Characters(settings.output_dir / "characters.json")
         self.segments = SegmentStore(library)
+        from .loras import Loras
+        self.loras = Loras(settings.output_dir / "loras.json",
+                           settings.models_dir / "loras" if settings.models_dir else None)
         self.registry = registry
         self.library = library
         self.comfy = comfy
@@ -195,14 +200,52 @@ class Engine:
             raise KeyError(f"참고 이미지를 찾을 수 없어요: {', '.join(missing)}")
         return ids, char
 
+    def resolve_loras(self, wanted: list[dict]) -> tuple[list[dict], str | None]:
+        """[{name|id, strength}] -> ([{name: file, strength, stage, triggers, label}], family)."""
+        out, fams = [], set()
+        for w in wanted or []:
+            key = str(w.get("name") or w.get("id") or "")
+            x = self.loras.get(key)
+            if not x:
+                raise KeyError(f"LoRA를 찾을 수 없어요: {key}")
+            if not x.get("family"):
+                raise ValueError(f"'{x['name']}'이(가) 어느 모델용인지 몰라요. LoRA 목록에서 계열을 정해 주세요.")
+            fams.add(x["family"])
+            out.append({"name": x["file"], "label": x["name"], "strength": float(w.get("strength", x.get("strength", 0.8))),
+                        "stage": x.get("stage") or "both", "triggers": x.get("triggers") or []})
+        if len(fams) > 1:
+            raise ValueError("서로 다른 모델용 LoRA는 같이 쓸 수 없어요")
+        return out, (fams.pop() if fams else None)
+
+    def _model_for_family(self, family: str, requested: str | None):
+        if requested and requested != "auto":
+            m = self.registry.get(requested)
+            if m.family.id != family:
+                raise ValueError(f"고른 LoRA는 {family} 계열용이라 {m.name}에는 쓸 수 없어요")
+            return m
+        cands = [m for m in self.registry.models if m.family.id == family]
+        if not cands:
+            raise ValueError("이 LoRA에 맞는 모델이 없어요")
+        cands.sort(key=lambda m: (m.installed(self.settings.models_dir) is False, m.role != "main"))
+        return cands[0]
+
     def submit_generate(self, req: GenerateRequest) -> Job:
         d = self.route(req)
         decision = d.as_dict()
+        loras, lfam = self.resolve_loras(req.loras)
+        if loras:
+            if lfam != d.model.family.id:
+                m = self._model_for_family(lfam, req.model)
+                decision.update(model_id=m.id, model_name=m.name, family=m.family.id)
+                decision["reasons"] = decision["reasons"] + [f"LoRA → {m.name}"]
+            decision["loras"] = loras
         if req.character or req.references:
             ids, char = self.resolve_refs(req.references, req.character)
             if len(ids) > 10:
                 raise ValueError("참고 이미지는 캐릭터 사진을 포함해 10장까지예요")
             m = self._reference_model(req.model)
+            if lfam and lfam != m.family.id:
+                raise ValueError("참고 이미지는 Qwen-Image 2.1로 그려서, 다른 모델용 LoRA와 같이 쓸 수 없어요")
             decision.update(model_id=m.id, model_name=m.name, family=m.family.id, ref_ids=ids,
                             character=char["name"] if char else None)
             decision["reasons"] = [f"캐릭터 '{char['name']}'" if char else f"참고 이미지 {len(ids)}장",
@@ -241,8 +284,15 @@ class Engine:
         else:
             model, why = router.model_for_edit(self.registry, src.get("model_id"), self.settings.models_dir,
                                                self.settings.default_style)
+        loras, lfam = self.resolve_loras(req.loras)
+        if loras and lfam != model.family.id:
+            if req.mode == "reference" or (req.model and req.model != "auto"):
+                raise ValueError(f"고른 LoRA는 {model.name}에 쓸 수 없어요")
+            model, why = self._model_for_family(lfam, None), "LoRA에 맞는 모델"
         decision = {"model_id": model.id, "model_name": model.name, "family": model.family.id, "reasons": [why],
                     "action": _action_label(req), **extra}
+        if loras:
+            decision["loras"] = loras
         job = Job(id=uuid.uuid4().hex[:12], kind="edit", request=req.model_dump(), decision=decision)
         return self._enqueue(job)
 
@@ -387,6 +437,10 @@ class Engine:
         negative = ", ".join(x for x in (req.negative, neg_inline) if x)
         await self._switch_family(model.family.id)
         ref_names = await self._upload_refs(job.decision.get("ref_ids") or [])
+        loras = job.decision.get("loras") or []
+        if loras:
+            from .loras import apply_triggers
+            prompt = apply_triggers(prompt, loras)
         if job.decision.get("character"):
             prompt = _with_identity(prompt, job.decision["character"], self.characters.get(job.decision["character"]))
         n = req.count
@@ -395,11 +449,11 @@ class Engine:
             if ref_names:
                 graph, extra = workflows.reference(
                     model, ref_names, prompt, negative, seed, width=job.decision["width"], height=job.decision["height"],
-                    models_dir=self.settings.models_dir, cfg=req.cfg)
+                    models_dir=self.settings.models_dir, cfg=req.cfg, loras=loras)
             else:
                 graph, extra = workflows.txt2img(
                     model, prompt, negative, job.decision["width"], job.decision["height"], seed,
-                    models_dir=self.settings.models_dir, steps=req.steps, cfg=req.cfg)
+                    models_dir=self.settings.models_dir, steps=req.steps, cfg=req.cfg, loras=loras)
             outs = await self.comfy.run(graph, self._progress(job, i / n, 1 / n))
             data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
             rec = self.library.add(data, {
@@ -408,6 +462,7 @@ class Engine:
                 "style": job.decision["style"], "seed": seed, "steps": req.steps or model.family.steps,
                 "cfg": req.cfg if req.cfg is not None else model.family.cfg, "label": "원본",
                 "ref_ids": job.decision.get("ref_ids") or [], "character": job.decision.get("character"),
+                "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             })
             job.result_ids.append(rec["id"])
 
@@ -423,6 +478,8 @@ class Engine:
         image_name = await self.comfy.upload_image(src_path.read_bytes(), f"{src['id']}.png")
 
         base_prompt = src.get("prompt", "") or ""
+        loras = job.decision.get("loras") or []
+        lw = {"loras": loras} if loras else {}
         if req.mode == "inpaint":
             if req.fill == "auto":
                 prompt = base_prompt            # model fills to match the whole picture
@@ -434,7 +491,7 @@ class Engine:
             mask_bytes = mask
             mask_name = await self.comfy.upload_image(mask, f"{src['id']}-mask-{job.id}.png")
             graph, extra = workflows.inpaint(model, image_name, mask_name, prompt, req.negative, seed,
-                                             denoise=req.denoise or 1.0, models_dir=self.settings.models_dir)
+                                             denoise=req.denoise or 1.0, models_dir=self.settings.models_dir, **lw)
         elif req.mode == "reference":
             mask_bytes = None
             refs = await self._upload_refs(job.decision.get("ref_ids") or [])
@@ -443,20 +500,21 @@ class Engine:
                 prompt = _with_identity(prompt, job.decision["character"], self.characters.get(job.decision["character"]),
                                         editing=True)
             graph, extra = workflows.reference(model, [image_name, *refs], prompt, req.negative, seed,
-                                               models_dir=self.settings.models_dir)
+                                               models_dir=self.settings.models_dir, **lw)
         elif req.mode == "outpaint":
             mask_bytes = None
             prompt = req.prompt.strip() or base_prompt
             graph, extra = workflows.outpaint(model, image_name, job.decision["pads"], prompt, req.negative, seed,
-                                              models_dir=self.settings.models_dir)
+                                              models_dir=self.settings.models_dir, **lw)
         else:
             mask_bytes = None
             prompt = req.prompt.strip() or base_prompt
             graph, extra = workflows.img2img(model, image_name, prompt, req.negative, seed,
-                                             req.denoise or 0.55, models_dir=self.settings.models_dir)
+                                             req.denoise or 0.55, models_dir=self.settings.models_dir, **lw)
         outs = await self.comfy.run(graph, self._progress(job, 0, 1))
         data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
         rec = self.library.add(data, {
+            "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             "kind": "edit", "source": src.get("source", "gen-studio"), "parent_id": src["id"],
             "prompt": base_prompt if req.mode in ("inpaint", "reference", "outpaint") else prompt, "edit_prompt": req.prompt,
             "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id, "seed": seed,
@@ -526,7 +584,7 @@ class Engine:
                 width=rec["width"], height=rec["height"], steps=rec.get("steps"), cfg=rec.get("cfg"),
                 references=[r for r in rec.get("ref_ids") or []
                             if not rec.get("character") or r not in (self.characters.get(rec["character"]) or {}).get("ref_ids", [])],
-                character=rec.get("character")))
+                character=rec.get("character"), loras=rec.get("loras") or []))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
             mask_b64 = None
@@ -537,7 +595,7 @@ class Engine:
                 fill=edit.get("fill", "prompt"), mask_png=mask_b64, denoise=edit.get("denoise"),
                 model=rec.get("model_id") or "auto", label=rec.get("label"), references=edit.get("references") or [],
                 character=edit.get("character"), aspect=edit.get("aspect"), anchor=edit.get("anchor") or "center",
-                pads=edit.get("pads") if edit.get("mode") == "outpaint" else None))
+                pads=edit.get("pads") if edit.get("mode") == "outpaint" else None, loras=rec.get("loras") or []))
         raise ValueError("불러온 원본 이미지는 재생성할 수 없어요. 편집으로 바꿔 보세요.")
 
 

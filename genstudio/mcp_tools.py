@@ -33,6 +33,8 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   fill="clear" deletes and blends with the surroundings. points=[{x,y}] selects whatever is at a pixel.
 - open_editor(image_id) shows a clickable segment editor inside the chat when the host supports MCP Apps
   (ChatGPT, Claude; other hosts get the overview and a link). Prefer it when the user wants to pick parts by hand.
+- LoRAs: list_loras / add_lora; pass loras=[{"name": ..., "strength": 0.8}] and the matching model is chosen,
+  trigger words are added automatically.
 - Characters: create_character(name, image ids or paths) once, then generate_image(character=name, ...) keeps
   the same face and outfit across scenes (tutorials, series).
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
@@ -180,6 +182,7 @@ def build_mcp(state: "State") -> MCPServer:
         character: str | None = None,
         reference_ids: list[str] | None = None,
         reference_paths: list[str] | None = None,
+        loras: list[dict] | None = None,
         wait_seconds: int = 45,
         include_image: bool = True,
     ):
@@ -187,7 +190,8 @@ def build_mcp(state: "State") -> MCPServer:
         (people, outfits, places, style); refer to them in the prompt as image 1, image 2 ..."""
         refs = _bring_in(reference_ids, reference_paths)
         req = GenerateRequest(prompt=prompt, style=style, aspect=aspect, model=model, negative=negative,
-                              seed=seed, count=max(1, min(count, 4)), character=character, references=refs)
+                              seed=seed, count=max(1, min(count, 4)), character=character, references=refs,
+                              loras=loras or [])
         job = state.engine.submit_generate(req)
         return await _finish(job, wait_seconds, include_image)
 
@@ -210,6 +214,7 @@ def build_mcp(state: "State") -> MCPServer:
         character: str | None = None,
         expand_aspect: str | None = None,
         expand_anchor: Literal["center", "top", "bottom", "left", "right"] = "center",
+        loras: list[dict] | None = None,
         denoise: float | None = None,
         model: str = "auto",
         seed: int = -1,
@@ -237,7 +242,7 @@ def build_mcp(state: "State") -> MCPServer:
         internal = {"mask": "inpaint", "redraw": "variation", "instruction": "reference", "expand": "outpaint"}[mode]
         req = EditRequest(image_id=image_id, prompt=prompt, mode=internal, fill=fill, mask_png=mask_base64,
                           denoise=denoise, model=model, seed=seed, references=refs, character=character,
-                          aspect=expand_aspect, anchor=expand_anchor, segments=segments or [])
+                          aspect=expand_aspect, anchor=expand_anchor, segments=segments or [], loras=loras or [])
         job = state.engine.submit_edit(req)
         return await _finish(job, wait_seconds, include_image)
 
@@ -258,7 +263,7 @@ def build_mcp(state: "State") -> MCPServer:
 
     @mcp.tool(description="List recent images with their image_ids, newest first.")
     async def list_images(limit: int = 20):
-        return [_info(r["id"]) for r in state.library.list(limit=max(1, min(limit, 100)))]
+        return {"images": [_info(r["id"]) for r in state.library.list(limit=max(1, min(limit, 100)))]}
 
     def _seg_list(image_id: str) -> list[dict]:
         return [{"number": i, "id": s["id"], "label": s["label"], "ko": s.get("ko"), "parent": s.get("parent"),
@@ -296,8 +301,9 @@ def build_mcp(state: "State") -> MCPServer:
 
     @mcp.tool(description="List saved characters.")
     async def list_characters():
-        return [{"name": c["name"], "id": c["id"], "aliases": c.get("aliases", []), "description": c["description"],
-                 "reference_ids": c["ref_ids"]} for c in state.engine.characters.list()]
+        return {"characters": [{"name": c["name"], "id": c["id"], "aliases": c.get("aliases", []),
+                                "description": c["description"], "reference_ids": c["ref_ids"]}
+                               for c in state.engine.characters.list()]}
 
     @mcp.tool(description=(
         "Copy an image into a folder on this PC, e.g. a project's assets. format: webp/png/jpg (default from the "
@@ -309,6 +315,35 @@ def build_mcp(state: "State") -> MCPServer:
         return state.library.export(image_id, Path(path), format, max_side, width, height, quality, overwrite)
 
     @mcp.tool(description=(
+        "List installed LoRAs (style, character, outfit add-ons) with the model family each works with and its "
+        "trigger words. Use them as loras=[{\"name\": ..., \"strength\": 0.8}] in generate_image / edit_image; the "
+        "right model is picked automatically."))
+    async def list_loras():
+        return {"loras": [{"name": x["name"], "id": x["id"], "family": x.get("family"), "family_name": x["family_name"],
+                           "triggers": x.get("triggers"), "strength": x.get("strength"), "present": x["present"],
+                           "note": x.get("note")} for x in state.engine.loras.list()]}
+
+    @mcp.tool(description=(
+        "Add a LoRA from a Civitai page URL (downloads in the background) or from a .safetensors path on this PC."))
+    async def add_lora(civitai_url: str | None = None, path: str | None = None, wait_seconds: int = 60):
+        import asyncio
+        L = state.engine.loras
+        if path:
+            p = Path(path).expanduser()
+            if not p.is_file():
+                raise ValueError(f"파일이 없어요: {path}")
+            return await L.add_file(p.name, p.read_bytes())
+        if not civitai_url:
+            raise ValueError("civitai_url 또는 path가 필요해요")
+        did = await L.add_from_civitai(civitai_url)
+        for _ in range(max(1, wait_seconds)):
+            if L.downloads[did]["status"] != "running":
+                break
+            await asyncio.sleep(1)
+        d = L.downloads[did]
+        return {**d, "lora": L.get(d["lora_id"]) if d.get("lora_id") else None}
+
+    @mcp.tool(description=(
         "Which model to use for a task, with the recommended one marked and why. task: generate | inpaint | redraw | "
         "instruction | expand. Pass the chosen id as `model` to generate_image / edit_image, or leave model='auto'."))
     async def recommend_model(task: str = "generate", prompt: str = "", image_id: str | None = None):
@@ -316,6 +351,6 @@ def build_mcp(state: "State") -> MCPServer:
 
     @mcp.tool(description="List the image models, what each is best for, and whether they are installed.")
     async def list_models():
-        return state.registry.status(state.settings.models_dir)
+        return {"models": state.registry.status(state.settings.models_dir)}
 
     return mcp

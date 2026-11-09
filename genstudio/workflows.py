@@ -28,10 +28,10 @@ def out(nid: str, idx: int = 0) -> list:
     return [nid, idx]
 
 
-def _patch_model(g: Graph, model: ModelSpec, m, stage: str):
+def _patch_model(g: Graph, model: ModelSpec, m, stage: str, user_loras: list[dict] | None = None):
     """LoRAs, sampling shift and cache that sit between the loader and the sampler."""
     fam = model.family
-    for lora in fam.loras:
+    for lora in [*fam.loras, *(user_loras or [])]:
         if lora.get("stage", "both") in ("both", stage):
             m = out(g.add("LoraLoaderModelOnly", model=m, lora_name=lora["name"],
                           strength_model=float(lora.get("strength", 1.0))))
@@ -43,7 +43,7 @@ def _patch_model(g: Graph, model: ModelSpec, m, stage: str):
     return m
 
 
-def _loaders(g: Graph, model: ModelSpec, models_dir: Path | None):
+def _loaders(g: Graph, model: ModelSpec, models_dir: Path | None, loras: list[dict] | None = None):
     """Returns ({stage: model_ref}, clip, vae). Two-expert models (Wan 2.2) have 'high' and 'low' stages."""
     fam = model.family
     kind = model.loader_kind(models_dir)
@@ -55,11 +55,17 @@ def _loaders(g: Graph, model: ModelSpec, models_dir: Path | None):
     else:
         ck = g.add("CheckpointLoaderSimple", ckpt_name=model.file.name)
         m, c, v = out(ck, 0), out(ck, 1), out(ck, 2)
+        # SDXL-style LoRAs also adjust the text encoder
+        for lora in loras or []:
+            n = g.add("LoraLoader", model=m, clip=c, lora_name=lora["name"], strength_model=float(lora.get("strength", 1.0)),
+                      strength_clip=float(lora.get("strength", 1.0)))
+            m, c = out(n, 0), out(n, 1)
+        loras = []
     if fam.high_noise:
         high = out(g.add("UNETLoader", unet_name=fam.high_noise, weight_dtype="default"))
-        models = {"high": _patch_model(g, model, high, "high"), "low": _patch_model(g, model, m, "low")}
+        models = {"high": _patch_model(g, model, high, "high", loras), "low": _patch_model(g, model, m, "low", loras)}
     else:
-        models = {"main": _patch_model(g, model, m, "main")}
+        models = {"main": _patch_model(g, model, m, "main", loras)}
     if fam.clip_skip:
         c = out(g.add("CLIPSetLastLayer", clip=c, stop_at_clip_layer=-abs(int(fam.clip_skip))))
     return models, c, v
@@ -135,9 +141,9 @@ def _empty_latent(g: Graph, model: ModelSpec, width: int, height: int):
 
 def txt2img(model: ModelSpec, prompt: str, negative: str, width: int, height: int, seed: int, *,
             models_dir: Path | None = None, steps: int | None = None, cfg: float | None = None,
-            prefix: str = "gen-studio/img") -> tuple[dict, dict]:
+            prefix: str = "gen-studio/img", loras: list[dict] | None = None) -> tuple[dict, dict]:
     g = Graph()
-    ms, c, v = _loaders(g, model, models_dir)
+    ms, c, v = _loaders(g, model, models_dir, loras)
     pos, neg, text = _conditioning(g, model, c, v, prompt, negative)
     latent = _empty_latent(g, model, width, height)
     s = _sampler(g, model, ms, pos, neg, latent, seed, 1.0, steps, cfg)
@@ -148,9 +154,9 @@ def txt2img(model: ModelSpec, prompt: str, negative: str, width: int, height: in
 
 def img2img(model: ModelSpec, image_name: str, prompt: str, negative: str, seed: int, denoise: float, *,
             models_dir: Path | None = None, steps: int | None = None, cfg: float | None = None,
-            prefix: str = "gen-studio/edit") -> tuple[dict, dict]:
+            prefix: str = "gen-studio/edit", loras: list[dict] | None = None) -> tuple[dict, dict]:
     g = Graph()
-    ms, c, v = _loaders(g, model, models_dir)
+    ms, c, v = _loaders(g, model, models_dir, loras)
     pos, neg, text = _conditioning(g, model, c, v, prompt, negative)
     src = g.add("LoadImage", image=image_name)
     latent = out(g.add("VAEEncode", pixels=out(src), vae=v))
@@ -175,10 +181,10 @@ def _masked_redraw(g: Graph, model: ModelSpec, ms: dict, c, v, src, mask, prompt
 
 def inpaint(model: ModelSpec, image_name: str, mask_name: str, prompt: str, negative: str, seed: int, *,
             denoise: float = 1.0, grow: int = 12, models_dir: Path | None = None, steps: int | None = None,
-            cfg: float | None = None, prefix: str = "gen-studio/edit") -> tuple[dict, dict]:
+            cfg: float | None = None, prefix: str = "gen-studio/edit", loras: list[dict] | None = None) -> tuple[dict, dict]:
     """Redraws only the white area of the mask; everything else is pasted back untouched."""
     g = Graph()
-    ms, c, v = _loaders(g, model, models_dir)
+    ms, c, v = _loaders(g, model, models_dir, loras)
     src = out(g.add("LoadImage", image=image_name))
     mask = out(g.add("LoadImageMask", image=mask_name, channel="red"))
     if grow:
@@ -189,10 +195,10 @@ def inpaint(model: ModelSpec, image_name: str, mask_name: str, prompt: str, nega
 
 def outpaint(model: ModelSpec, image_name: str, pads: dict, prompt: str, negative: str, seed: int, *,
              feathering: int = 40, models_dir: Path | None = None, steps: int | None = None, cfg: float | None = None,
-             prefix: str = "gen-studio/edit") -> tuple[dict, dict]:
+             prefix: str = "gen-studio/edit", loras: list[dict] | None = None) -> tuple[dict, dict]:
     """Extends the canvas (left/top/right/bottom pixels) and paints the new area to match."""
     g = Graph()
-    ms, c, v = _loaders(g, model, models_dir)
+    ms, c, v = _loaders(g, model, models_dir, loras)
     src = out(g.add("LoadImage", image=image_name))
     pad = g.add("ImagePadForOutpaint", image=src, left=int(pads.get("left", 0)), top=int(pads.get("top", 0)),
                 right=int(pads.get("right", 0)), bottom=int(pads.get("bottom", 0)), feathering=int(feathering))
@@ -202,7 +208,7 @@ def outpaint(model: ModelSpec, image_name: str, pads: dict, prompt: str, negativ
 
 def reference(model: ModelSpec, image_names: list[str], prompt: str, negative: str, seed: int, *,
               width: int | None = None, height: int | None = None, models_dir: Path | None = None,
-              cfg: float | None = None, prefix: str = "gen-studio/ref") -> tuple[dict, dict]:
+              cfg: float | None = None, prefix: str = "gen-studio/ref", loras: list[dict] | None = None) -> tuple[dict, dict]:
     """Qwen-Image 2.1 reference mode (official Turbo edit template).
 
     image 1 is the picture being edited (or the main reference); output keeps its size unless width/height
@@ -213,7 +219,7 @@ def reference(model: ModelSpec, image_names: list[str], prompt: str, negative: s
     if not 1 <= len(image_names) <= 10:
         raise ValueError("참고 이미지는 1~10장이에요")
     g = Graph()
-    ms, c, v = _loaders(g, model, models_dir)
+    ms, c, v = _loaders(g, model, models_dir, loras)
     text = (model.prefix + prompt).strip()
     neg_text = ", ".join(x for x in (negative.strip(), model.family.negative_default) if x)
     images = {f"images.image_{i}": out(g.add("LoadImage", image=n)) for i, n in enumerate(image_names, 1)}
@@ -282,7 +288,7 @@ REQUIRED_NODES = sorted({
     # Wan 2.2
     "ModelSamplingSD3", "LoraLoaderModelOnly", "KSamplerAdvanced", "EmptyHunyuanLatentVideo",
     # canvas extension
-    "ImagePadForOutpaint",
+    "ImagePadForOutpaint", "LoraLoader",
     # segmentation
     "SAM3_Detect", "MaskToImage", "PrimitiveString", "TextGenerateV2", "PreviewAny",
 })

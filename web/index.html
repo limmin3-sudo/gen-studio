@@ -16,6 +16,7 @@
     <nav class="tabs">
       <a href="#generate" data-view="generate">생성</a>
       <a href="#gallery" data-view="gallery">갤러리</a>
+      <a href="#loras" data-view="loras">LoRA</a>
     </nav>
     <div class="spacer"></div>
     <span class="status" id="status"><i class="dot"></i><span>연결 확인 중</span></span>
@@ -39,8 +40,11 @@
           <label class="sel-pill">캐릭터 <b id="charLbl">없음</b>
             <select id="genChar" aria-label="캐릭터"><option value="">없음</option></select></label>
           <button type="button" class="sel-pill" id="addRef">+ 참고 이미지</button>
+          <button type="button" class="sel-pill" id="addLora">+ LoRA</button>
         </div>
+        <div class="lpick" id="loraPick" hidden></div>
         <div class="refs" id="genRefs"></div>
+        <div class="refs" id="genLoras"></div>
         <form class="prompt" id="genForm">
           <textarea id="genPrompt" rows="1" placeholder="무엇을 그릴까요? 예: 비 오는 밤 골목에 서 있는 여자, 실사, 세로"></textarea>
           <button class="send" aria-label="생성"><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
@@ -103,6 +107,23 @@
       </aside>
     </section>
 
+    <!-- ======================= LoRA ======================= -->
+    <section class="gallery" id="lorasView" hidden>
+      <header>
+        <h2>LoRA</h2><span class="hint" id="loraCount"></span>
+        <div class="spacer"></div>
+        <button class="btn" id="loraScan">폴더 다시 읽기</button>
+        <button class="btn" id="loraFileBtn">파일 넣기</button>
+      </header>
+      <div class="inline" style="max-width:760px;margin-bottom:8px">
+        <input id="loraUrl" placeholder="Civitai LoRA 주소를 붙여넣으세요 (civitai.com/models/...)">
+        <button class="btn primary" id="loraAdd">받기</button>
+      </div>
+      <p class="hint" style="margin:0 0 14px">LoRA는 학습한 모델 계열에서만 동작해요. 계열은 Civitai 정보나 파일 내용을 보고 자동으로 정합니다. 생성 화면의 <b>+ LoRA</b>로 골라 쓰세요.</p>
+      <div id="loraDl"></div>
+      <div class="lgrid" id="loraGrid"></div>
+    </section>
+
     <!-- ======================= gallery ======================= -->
     <section class="gallery" id="galleryView" hidden>
       <header>
@@ -116,6 +137,7 @@
 </div>
 <input type="file" id="fileIn" accept="image/*" hidden>
 <input type="file" id="refIn" accept="image/*" multiple hidden>
+<input type="file" id="loraFile" accept=".safetensors" multiple hidden>
 <div class="drop" id="drop" hidden>여기에 놓으면 편집기로 불러옵니다</div>
 <div class="toast" id="toast" role="status"></div>
 <script src="app.js"></script>
