@@ -468,3 +468,16 @@ def test_ui_is_never_served_stale(client):
     assert m and "__V__" not in r.text and 'style.css?v=' in r.text
     js = client.get(f"/app.js?v={m.group(1)}")
     assert js.status_code == 200 and js.headers["cache-control"] == "no-cache" and "edEnhance" in js.text
+
+
+def test_my_chips(client, monkeypatch, tmp_path):
+    monkeypatch.setattr("genstudio.config.DATA_DIR", tmp_path)
+    first = client.get("/api/chips").json()["chips"]
+    assert first and all(c["label"] and c["text"] for c in first)            # general defaults until saved
+    r = client.put("/api/chips", json={"chips": [{"label": "A", "text": "첫 문장"}],
+                                       "bulk": "B | 둘째 문장\n# 메모\nC\t셋째 문장\n\nA | 첫 문장\n그냥 한 줄 문장"}).json()["chips"]
+    assert [c["label"] for c in r] == ["A", "B", "C", "그냥 한 줄 문장"] and r[1]["text"] == "둘째 문장"
+    assert client.get("/api/chips").json()["chips"] == r
+    assert (tmp_path / "chips.json").exists()
+    too_many = [{"label": f"c{i}", "text": f"t{i}"} for i in range(81)]
+    assert client.put("/api/chips", json={"chips": too_many}).status_code == 400

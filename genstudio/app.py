@@ -145,6 +145,23 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
 
+    @app.get("/api/chips")
+    async def get_chips():
+        from . import chips
+        return {"chips": chips.load()}
+
+    @app.put("/api/chips")
+    async def put_chips(body: dict):
+        """Replace the list; `bulk` ('이름 | 문장' lines) is appended to it."""
+        from . import chips
+        items = list(body.get("chips") or [])
+        if body.get("bulk"):
+            items += chips.parse_bulk(str(body["bulk"]))
+        try:
+            return {"chips": chips.save(items)}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     @app.post("/api/enhance-edit")
     async def enhance_edit(body: dict):
         text = str(body.get("prompt") or "").strip()

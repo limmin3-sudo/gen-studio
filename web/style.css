@@ -331,3 +331,20 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 
 .acct{width:100%;box-sizing:border-box;resize:vertical;min-height:52px;margin:0 0 8px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;font-size:13.5px;line-height:1.45}
 .acct:focus{outline:2px solid var(--accent);outline-offset:-1px}
+
+/* 내 칩 (editor quick-insert sentences) */
+.ed-chips{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:thin}
+.ed-chips .chip{flex:none;height:30px;padding:0 12px;border-radius:15px;background:var(--chip);border:1px solid var(--line);font-size:12.5px;white-space:nowrap;color:var(--fg);cursor:pointer}
+.ed-chips .chip:hover{background:var(--chip-hover)}
+.ed-chips .chip:active{transform:scale(.97)}
+.ed-chips .chip-edit{background:transparent;color:var(--muted);border-style:dashed}
+.chipdlg{width:min(680px,calc(100vw - 24px));max-height:calc(100vh - 40px);border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--fg);padding:16px;box-sizing:border-box}
+.chipdlg h3{margin:0 0 4px;font-size:16px}
+.chipdlg .clist{display:grid;gap:6px;margin:12px 0;max-height:46vh;overflow:auto}
+.chipdlg .crow{display:grid;grid-template-columns:minmax(80px,1fr) minmax(0,2.4fr) 30px 30px 30px;gap:6px;align-items:center}
+.chipdlg input,.chipdlg textarea{min-width:0;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 10px;font:inherit;font-size:13px;box-sizing:border-box}
+.chipdlg textarea{width:100%;height:auto;padding:8px 10px;margin-top:4px;resize:vertical}
+.chipdlg .crow button{width:30px;height:30px;border-radius:15px;background:var(--chip)}
+.chipdlg .row{display:flex;gap:8px;margin:8px 0}
+.chipdlg .row.end{justify-content:flex-end;margin-top:12px}
+@media (max-width:560px){.chipdlg .crow{grid-template-columns:minmax(0,1fr) 30px 30px 30px}.chipdlg .crow [data-f="text"]{grid-column:1/-1;grid-row:2}}

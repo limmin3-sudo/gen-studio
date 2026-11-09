@@ -652,6 +652,57 @@ const Editor = (() => {
   const EXPAND_RX = /전신|발끝|발까지|신발까지|다리까지|무릎까지|허벅지까지|줌\s*아웃|멀리서|더 넓게|full[\s-]?body|zoom(ed)?[\s-]?out|wider shot/i;
   bindEnter(promptEl, form);
   promptEl.addEventListener('input', paintRoute);
+  /* ---- 내 칩: the owner's quick-insert sentences (data/chips.json) */
+  let chips = [];
+  async function loadChips() { try { chips = (await api.get('/api/chips')).chips; } catch { chips = []; } paintChips(); }
+  function paintChips() {
+    $('#edChips').innerHTML = chips.map((c, i) => `<button type="button" class="chip" data-chip="${i}" title="${esc(c.text)}">${esc(c.label)}</button>`).join('')
+      + `<button type="button" class="chip chip-edit" data-chips-edit title="칩 추가·수정">＋ 칩</button>`;
+  }
+  $('#edChips').addEventListener('click', e => {
+    if (e.target.closest('[data-chips-edit]')) { editChips(); return; }
+    const b = e.target.closest('[data-chip]'); if (!b) return;
+    const text = chips[+b.dataset.chip].text, cur = promptEl.value.trim();
+    if (cur.includes(text)) { toast('이미 들어 있어요', 2000); return; }
+    promptEl.value = cur ? `${cur.replace(/[,，]\s*$/, '')}, ${text}` : text;
+    autoGrow(promptEl); promptEl.focus();
+    promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+    paintRoute();
+  });
+  function editChips() {
+    const d = document.createElement('dialog'); d.className = 'chipdlg';
+    let list = chips.map(c => ({...c}));
+    const rows = () => list.map((c, i) => `<div class="crow" data-i="${i}">
+        <input data-f="label" value="${esc(c.label)}" maxlength="24" placeholder="칩 이름">
+        <input data-f="text" value="${esc(c.text)}" maxlength="600" placeholder="입력창에 들어갈 문장">
+        <button type="button" data-mv="-1" aria-label="위로">↑</button><button type="button" data-mv="1" aria-label="아래로">↓</button><button type="button" data-rm aria-label="지우기">×</button></div>`).join('')
+      || '<p class="hint">칩이 없어요. 아래에 추가하세요.</p>';
+    const paint = () => { d.querySelector('.clist').innerHTML = rows(); };
+    d.innerHTML = `<h3>내 칩</h3><p class="hint">칩을 누르면 문장이 편집 입력창에 이어 붙어요. 이 PC에만 저장돼요.</p>
+      <div class="clist"></div>
+      <div class="row"><button type="button" class="btn" data-add>＋ 하나 추가</button></div>
+      <label class="hint" for="chipBulk">한꺼번에 붙여넣기 (한 줄에 하나: <b>칩 이름 | 문장</b>)</label>
+      <textarea id="chipBulk" rows="4" placeholder="검은 티로 | 선택한 옷을 검은 티셔츠로 바꾸기&#10;조명 맞추기 | 원래 조명과 그림자에 맞추기"></textarea>
+      <div class="row end"><button type="button" class="btn" data-close>취소</button><button type="button" class="btn primary" data-save>저장</button></div>`;
+    document.body.appendChild(d); paint(); d.showModal();
+    d.addEventListener('input', e => { const r = e.target.closest('[data-i]'); if (r && e.target.dataset.f) list[+r.dataset.i][e.target.dataset.f] = e.target.value; });
+    d.addEventListener('click', async e => {
+      const r = e.target.closest('[data-i]'), i = r ? +r.dataset.i : -1;
+      if (e.target.closest('[data-rm]')) { list.splice(i, 1); paint(); return; }
+      const mv = e.target.closest('[data-mv]');
+      if (mv) { const j = i + +mv.dataset.mv; if (j >= 0 && j < list.length) { [list[i], list[j]] = [list[j], list[i]]; paint(); } return; }
+      if (e.target.closest('[data-add]')) { list.push({label: '', text: ''}); paint(); d.querySelector('.crow:last-child input')?.focus(); return; }
+      if (e.target.closest('[data-close]')) { d.remove(); return; }
+      if (e.target.closest('[data-save]')) {
+        try {
+          const r2 = await req('PUT', '/api/chips', {chips: list, bulk: d.querySelector('#chipBulk').value});
+          chips = r2.chips; paintChips(); d.remove(); toast(`칩 ${chips.length}개를 저장했어요`);
+        } catch (err) { toast(err.message, 5000); }
+      }
+    });
+    d.addEventListener('close', () => d.remove());
+  }
+  loadChips();
   $('#edEnhance').onclick = async () => {
     const t = promptEl.value.trim();
     if (!t) { promptEl.focus(); toast('먼저 대충이라도 적어 주세요'); return; }
