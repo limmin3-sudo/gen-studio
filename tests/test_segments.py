@@ -178,3 +178,11 @@ def test_find_by_korean_word(client, fake):
     img = imported(client, 512, 768)
     segs = segment(client, img, labels=["견장"])
     assert [s["label"] for s in segs] == ["epaulets", "epaulets"] and segs[0]["ko"] == "견장"
+
+
+def test_left_and_right_parts_are_merged():
+    txt = json.dumps([{"label": "left arm", "ko": "왼팔"}, {"label": "right arm", "ko": "오른팔"},
+                      {"label": "left leg", "ko": "왼쪽 다리"}, {"label": "right foot", "ko": "오른발"},
+                      {"label": "left foot", "ko": "왼발"}, {"label": "blonde hair", "ko": "금발"}])
+    assert [(x["label"], x["ko"]) for x in parse_labels(txt)] == [
+        ("arms", "팔"), ("legs", "다리"), ("feet", "발"), ("blonde hair", "금발")]

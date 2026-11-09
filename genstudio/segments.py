@@ -21,7 +21,8 @@ List the distinct visible things in the image as a JSON array. Each item:
 Include every person (as "woman", "man", "girl", "boy" or "person"), then their hair, face, each clothing item
 (top, bottom, legwear such as stockings, tights or socks, and shoes), visible body parts people often edit (legs,
 arms), accessories and anything they hold, then notable objects, furniture, vehicles, and finally "background".
-Use one item per kind of thing even if there are several (e.g. one "epaulets" item for both).
+Use one item per kind of thing even if there are several (e.g. one "epaulets" item for both). Never split left
+and right: use "arms", "legs", "hands", "feet", "shoes", "eyes" once each.
 At most 16 items. Reply with the JSON array only."""
 
 # used when no vision-language model is installed
@@ -67,6 +68,23 @@ MIN_AREA = 0.0008      # ignore specks smaller than this share of the image
 DUP_IOU = 0.92
 
 
+_SIDE = re.compile(r"^(left|right)\s+", re.I)
+_PLURAL = {"foot": "feet", "arm": "arms", "leg": "legs", "hand": "hands", "shoe": "shoes", "eye": "eyes", "ear": "ears",
+           "sleeve": "sleeves", "glove": "gloves", "boot": "boots", "sock": "socks", "earring": "earrings",
+           "shoulder": "shoulders", "thigh": "thighs", "knee": "knees", "epaulet": "epaulets"}
+
+
+def merge_sides(label: str, ko: str) -> tuple[str, str]:
+    """'left arm' + '왼팔' -> 'arms' + '팔': both sides become one group that SAM 3 splits into instances."""
+    if not _SIDE.match(label):
+        return label, ko
+    rest = _SIDE.sub("", label)
+    words = rest.split()
+    words[-1] = _PLURAL.get(words[-1], words[-1] if words[-1].endswith("s") else words[-1] + "s")
+    ko = re.sub(r"^(왼쪽|오른쪽|왼|오른)\s*", "", ko or "").strip()
+    return " ".join(words), ko
+
+
 def parse_labels(text: str, limit: int = 16) -> list[dict]:
     """Pull the JSON array out of a model reply (tolerates code fences and chatter)."""
     m = re.search(r"\[.*\]", text or "", re.S)
@@ -84,12 +102,13 @@ def parse_labels(text: str, limit: int = 16) -> list[dict]:
             continue
         label = re.sub(r"[^a-zA-Z0-9 '\-]", "", str(it.get("label", ""))).strip().lower()
         label = " ".join(label.split()[:4])
+        label, ko = merge_sides(label, str(it.get("ko") or "").strip()[:30])
         if not label or label in seen:
             continue
         seen.add(label)
         parent = it.get("parent")
         parent = str(parent).strip().lower() if parent not in (None, "", "null", "none") else None
-        out.append({"label": label, "ko": str(it.get("ko") or "").strip()[:30], "parent": parent})
+        out.append({"label": label, "ko": ko, "parent": parent})
         if len(out) >= limit:
             break
     return out
