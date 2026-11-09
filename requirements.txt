@@ -7,3 +7,6 @@ python-multipart>=0.0.9
 pillow>=10
 mcp>=2.3,<3
 psutil>=5.9
+qrcode>=7.4
+pywebview>=5.3; sys_platform == "win32"
+pystray>=0.19; sys_platform == "win32"

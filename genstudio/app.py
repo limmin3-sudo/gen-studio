@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__, router
+from .app_routes import set_remote  # noqa: F401  (used by the desktop tray)
 from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
@@ -412,6 +413,9 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
             raise HTTPException(400, f"이미지를 읽을 수 없어요: {e}")
 
     # ------------------------------------------------------------------- MCP
+    from .app_routes import register as _register_app_routes
+    _register_app_routes(app, state)
+
     # use the route itself (not a mount) so POST /mcp works without a redirect to /mcp/
     app.router.routes.extend(mcp_app.routes)
 

@@ -21,6 +21,8 @@ if exist ".git" (
 )
 "%USERPROFILE%\.local\bin\uv.exe" pip install --python .venv\Scripts\python.exe -r requirements.txt
 ".venv\Scripts\python.exe" scripts\download_models.py
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\make_shortcut.ps1
 echo.
-echo 업데이트가 끝났어요. start.bat 으로 다시 실행하세요.
+echo 업데이트가 끝났어요. 이제 바탕화면의 Gen Studio 아이콘으로 실행하세요.
+echo 앞으로 업데이트는 앱 안의 설정 화면에서 버튼으로 할 수 있어요.
 pause

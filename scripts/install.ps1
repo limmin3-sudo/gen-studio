@@ -63,9 +63,12 @@ Step "5/5 모델 다운로드 (약 75GB)"
 & .venv\Scripts\python.exe scripts\download_models.py
 $code = $LASTEXITCODE
 
+Step "바탕화면 아이콘 만들기"
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'make_shortcut.ps1')
+
 Write-Host ""
 if ($code -eq 0) {
-    Write-Host "설치가 끝났어요! start.bat 을 더블클릭하면 실행됩니다." -ForegroundColor Green
+    Write-Host "설치가 끝났어요! 바탕화면의 'Gen Studio' 아이콘을 더블클릭하면 실행됩니다." -ForegroundColor Green
 } else {
     Write-Host "일부 모델을 받지 못했어요. install.bat 을 다시 실행하면 이어서 받습니다." -ForegroundColor Yellow
 }
