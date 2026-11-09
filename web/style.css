@@ -328,3 +328,6 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .acc[open] summary::after{transform:rotate(-135deg)}
 .acc .accb{padding:0 14px 12px}
 .acc .accb .note:first-child{margin-top:0}
+
+.acct{width:100%;box-sizing:border-box;resize:vertical;min-height:52px;margin:0 0 8px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;font-size:13.5px;line-height:1.45}
+.acct:focus{outline:2px solid var(--accent);outline-offset:-1px}

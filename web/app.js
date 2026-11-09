@@ -636,7 +636,7 @@ const Editor = (() => {
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
   let detStrength = store.get('detStrength', 0.4), upRefine = store.get('upRefine', true);
-  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '480p'), reposeId = null;
+  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '480p'), reposeId = null, vidText = '', reposeText = '';
   $('#reposeIn').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     const fd = new FormData(); fd.append('file', f, f.name);
@@ -760,12 +760,14 @@ const Editor = (() => {
           <p class="note">사람이나 물건만 남기고 배경을 지웁니다. 새 버전으로 저장되고, PNG로 받으면 투명하게 남아요.</p>
           <div class="field"><div class="seg2"><button data-bg="transparent">투명</button><button data-bg="white">흰색</button><button data-bg="gray">회색</button><button data-bg="black">검정</button></div></div>`)
         + acc('video', '영상 만들기', '3초·5초 움직이는 영상', `
-          <p class="note">아래 입력칸에 "고개를 돌리며 웃는다, 머리카락이 바람에 날린다"처럼 움직임을 적으세요. 비우면 자연스럽게 살짝 움직여요. 몇 분 걸려요.</p>
+          <textarea class="acct" id="vidText" rows="2" placeholder="어떻게 움직일지 적으세요. 예: 고개를 돌리며 웃는다, 머리카락이 바람에 날린다">${esc(vidText)}</textarea>
+          <p class="note">비워두면 자연스럽게 살짝 움직여요. 몇 분 걸려요.</p>
           <div class="field"><span>길이</span><div class="seg2">${[3, 5].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div></div>
           <div class="field"><span>화질</span><div class="seg2">${['480p', '720p'].map(q => `<button data-vq="${q}" aria-pressed="${q === vidQ}">${q}${q === '720p' ? ' (느림)' : ''}</button>`).join('')}</div></div>
           <div class="field"><div class="seg2"><button id="makeVideo" aria-pressed="true">영상 만들기</button></div></div>`)
         + acc('repose', '자세 바꾸기', '같은 사람·옷·배경, 자세만', `
-          <p class="note">원하는 자세가 담긴 사진을 넣거나, 아래 입력칸에 "침대에 앉아 다리를 꼬고 있다"처럼 적으세요. 둘 다 써도 돼요.</p>
+          <textarea class="acct" id="reposeText" rows="2" placeholder="어떤 자세로 바꿀지 적으세요. 예: 침대에 앉아 다리를 꼬고 있다">${esc(reposeText)}</textarea>
+          <p class="note">원하는 자세가 담긴 사진을 넣어도 돼요. 글과 사진을 같이 써도 됩니다. 사진이 있으면 더 정확해요.</p>
           <div class="field"><div class="seg2">${reposeId ? `<span class="ref"><img src="${thumbUrl(reposeId)}" alt=""><button type="button" data-act2="repose-clear" aria-label="자세 사진 빼기">×</button></span>` : ''}<button data-act2="repose-pick">${reposeId ? '다른 사진' : '자세 사진 넣기'}</button></div></div>
           <div class="field"><div class="seg2"><button id="doRepose" aria-pressed="true">자세 바꾸기</button></div></div>`)
         + acc('person', '이 인물·자세 다시 쓰기', '캐릭터 등록, 포즈, 참고 이미지', `
@@ -799,6 +801,10 @@ const Editor = (() => {
   pane.addEventListener('pointerover', e => { const r = e.target.closest('[data-skey]'); const k = r ? r.dataset.skey : null; if (k !== segHover) { segHover = k; paintSegLayer(); } });
   pane.addEventListener('pointerleave', () => { if (segHover) { segHover = null; paintSegLayer(); } });
   pane.addEventListener('keydown', e => { if (e.target.id === 'segFind' && e.key === 'Enter') { e.preventDefault(); $('#findSeg').click(); } });
+  pane.addEventListener('input', e => {
+    if (e.target.id === 'vidText') vidText = e.target.value;
+    if (e.target.id === 'reposeText') reposeText = e.target.value;
+  });
   pane.addEventListener('input', e => { if (e.target.id === 'bSize') { brushSize = +e.target.value; $('#bSizeV').textContent = brushSize; store.set('brush', brushSize); } });
   pane.addEventListener('change', e => {
     if (e.target.id === 'autoFillToggle') setAutoFill(e.target.checked);
@@ -821,7 +827,7 @@ const Editor = (() => {
     if (a2 && a2.dataset.act2 === 'repose-pick') { $('#reposeIn').click(); return; }
     if (a2 && a2.dataset.act2 === 'repose-clear') { reposeId = null; paintPane(); return; }
     if (e.target.closest('#doRepose') && rec && !busy) {
-      api.post(`/api/images/${rec.id}/repose`, {pose: reposeId, prompt: promptEl.value.trim()})
+      api.post(`/api/images/${rec.id}/repose`, {pose: reposeId, prompt: (reposeText || promptEl.value).trim()})
         .then(j => runJob(j, `자세 바꾸기 · ${j.decision.model_name}`)).catch(err => toast(err.message, 6000));
       return;
     }
@@ -1173,7 +1179,7 @@ const Editor = (() => {
     if (!rec || busy) return;
     if (rec.media === 'video') { toast('영상에서 다시 영상을 만들 수는 없어요. 원본 이미지를 고르세요.'); return; }
     try {
-      const j = await api.post(`/api/images/${rec.id}/video`, {prompt: promptEl.value.trim(), seconds: vidSec, quality: vidQ});
+      const j = await api.post(`/api/images/${rec.id}/video`, {prompt: (vidText || promptEl.value).trim(), seconds: vidSec, quality: vidQ});
       await runJob(j, `${j.decision.action} · ${j.decision.width}×${j.decision.height} · Wan 2.2`);
     } catch (e) { toast(e.message, 6000); }
   }
@@ -1182,7 +1188,7 @@ const Editor = (() => {
     if (rec.media === 'video') { toast('영상에서 다시 영상을 만들 수는 없어요. 원본 이미지를 고르세요.'); return; }
     accOpen.add('video'); store.set('acc', [...accOpen]); paintPane();
     pane.querySelector('[data-acc="video"]')?.scrollIntoView({behavior: 'smooth', block: 'start'});
-    promptEl.placeholder = '어떻게 움직일지 적고, 오른쪽의 영상 만들기를 누르세요'; promptEl.focus();
+    setTimeout(() => pane.querySelector('#vidText')?.focus(), 250);
   };
   $('#arBtn').onclick = () => setTool('crop');
   $('#copyBtn').onclick = async () => {
