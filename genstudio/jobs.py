@@ -164,6 +164,16 @@ class UpscaleRequest(BaseModel):
     prompt: str = ""
 
 
+class ReposeRequest(BaseModel):
+    image_id: str
+    pose: str | None = Field(None, description="이 사진(또는 포즈 맵)의 자세로 바꾸기")
+    prompt: str = Field("", description="말로 하는 자세 설명, 또는 포즈와 함께 덧붙일 말")
+
+
+REPOSE_KEEP = ("Keep the same person: same face, hair, body, skin and clothing (or lack of it), and keep the same "
+               "background, lighting and image style.")
+
+
 class CutoutRequest(BaseModel):
     image_id: str
     background: str = Field("transparent", description="transparent | white | black | gray | #rrggbb")
@@ -1043,6 +1053,62 @@ class Engine:
                                  note=f"Gen Studio에서 학습 · 사진 {n}장 · {d['steps']}스텝")
         job.result = {"lora": item, "captions": captions}
 
+    # ------------------------------------------------------------ change the pose of the person in a picture
+    def submit_repose(self, req: ReposeRequest) -> Job:
+        src = self.library.get(req.image_id)
+        if not src:
+            raise KeyError("이미지를 찾을 수 없어요")
+        self._need_still(req.image_id)
+        if not req.pose and not req.prompt.strip():
+            raise ValueError("자세 사진을 넣거나, 아래 입력칸에 어떤 자세로 바꿀지 적어 주세요")
+        pose = None
+        if req.pose:
+            rec = self.library.get(req.pose)
+            if not rec:
+                raise KeyError(f"자세 사진을 찾을 수 없어요: {req.pose}")
+            self._need_still(req.pose)
+            is_map = rec.get("kind") == "pose"
+            if not is_map and not self.registry.tool_ready("pose_detect", self.settings.models_dir):
+                raise ValueError("포즈 인식 모델(SDPose)이 없어요. 설정에서 모델을 받아 주세요.")
+            pose = {"image": req.pose, "is_map": is_map}
+        m = self._reference_model(None)
+        job = Job(id=uuid.uuid4().hex[:12], kind="repose", request=req.model_dump(),
+                  decision={"action": "자세 바꾸기", "model_id": m.id, "model_name": m.name, "family": m.family.id,
+                            "pose": pose})
+        return self._enqueue(job)
+
+    async def _run_repose(self, job: Job) -> None:
+        req = ReposeRequest(**job.request)
+        src = self.library.get(req.image_id)
+        path = self.library.path(req.image_id)
+        if not src or not path:
+            raise ComfyError("이미지가 사라졌어요")
+        model = self.registry.get(job.decision["model_id"])
+        names = [await self.comfy.upload_image(path.read_bytes(), f"{src['id']}.png")]
+        extra = req.prompt.strip()
+        if job.decision.get("pose"):
+            pose_id, pose_png = await self._pose_map(job, job.decision["pose"])
+            pose_png = fit_on_black(pose_png, src["width"], src["height"])
+            names.append(await self.comfy.upload_image(pose_png, f"repose-{pose_id}-{src['width']}.png"))
+            instruction = ("Redraw the person from image 1 in exactly the pose shown in image 2 (a skeleton drawing: "
+                           "follow the positions of the head, arms, hands, legs and feet; do not draw the skeleton). "
+                           + (f"{extra}. " if extra else "") + REPOSE_KEEP)
+        else:
+            instruction = f"Change the pose of the person in image 1: {extra}. " + REPOSE_KEEP
+        await self._switch_family(model.family.id)
+        job.message = "자세 바꾸는 중"
+        seed = random.randint(0, 2**31 - 1)
+        graph, info = workflows.reference(model, names, instruction, "", seed, models_dir=self.settings.models_dir)
+        outs = await self.comfy.run(graph, self._progress(job, 0.1, 0.9))
+        data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+        rec = self.library.add(data, {
+            "kind": "edit", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
+            "edit_prompt": req.prompt, "final_prompt": info["final_prompt"], "model_id": model.id,
+            "family": model.family.id, "style": src.get("style"), "seed": seed, "label": "자세 바꾸기",
+            "edit": {"mode": "repose", "pose": req.pose},
+        })
+        job.result_ids.append(rec["id"])
+
     def submit_cutout(self, req: CutoutRequest) -> Job:
         self._need_still(req.image_id)
         if not self.library.get(req.image_id):
@@ -1153,6 +1219,8 @@ class Engine:
                     await self._run_upscale(job)
                 elif job.kind == "video":
                     await self._run_video(job)
+                elif job.kind == "repose":
+                    await self._run_repose(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -1541,6 +1609,9 @@ class Engine:
             edit = rec.get("edit") or {}
             if edit.get("mode") == "character_sheet":
                 raise ValueError("캐릭터 사진은 캐릭터 만들기로 다시 만들어 주세요")
+            if edit.get("mode") == "repose":
+                return self.submit_repose(ReposeRequest(image_id=rec["parent_id"], pose=edit.get("pose"),
+                                                        prompt=rec.get("edit_prompt") or ""))
             if edit.get("mode") == "upscale":
                 return self.submit_upscale(UpscaleRequest(image_id=rec["parent_id"], scale=edit.get("scale") or 2,
                                                           refine=edit.get("refine"), denoise=edit.get("denoise"),

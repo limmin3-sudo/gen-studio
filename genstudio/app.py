@@ -16,7 +16,7 @@ from .app_routes import set_remote  # noqa: F401  (used by the desktop tray)
 from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
-from .jobs import CharacterBuildRequest, CutoutRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -283,6 +283,17 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         try:
             return engine.submit_detail(DetailRequest(image_id=image_id, **{k: v for k, v in body.items()
                                                                            if k in ("targets", "strength", "prompt", "model")})).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/images/{image_id}/repose")
+    async def repose(image_id: str, body: dict | None = None):
+        body = body or {}
+        try:
+            return engine.submit_repose(ReposeRequest(image_id=image_id, pose=body.get("pose"),
+                                                      prompt=body.get("prompt") or "")).public()
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
         except ValueError as e:

@@ -15,11 +15,13 @@
 - LAKIS 코드는 복사·수정 금지 라이선스라 참고만 하고 직접 새로 만든다.
 
 ## 다음에 할 일 (2026-11-09 정함)
-- [ ] 성인용 튜닝 모델 추가: 실사 PornMaster Z-image (Turbo V3.5), 반실사 Illustrij (v21), 보조 CyberRealistic Pony
-- [ ] Civitai(.com/.red) 주소만 붙이면 체크포인트를 추가하는 "모델 추가" 기능
-- [ ] 포니 계열 지원: score 태그 자동, 포니 LoRA를 고르면 포니 모델로
-- [ ] Qwen 편집 뒤 바뀐 부분만 성인용 모델로 한 번 더 다듬는 옵션
-- [ ] 편집 화면 "자세 바꾸기" 칸: 자세 사진이나 말로, 지금 이미지의 사람 자세를 바꿈
+- [x] 새 모델 구성: 실사 RedCraft QW21 v3(무검열 Qwen 2.1), 실사 도우미 PornMaster Z-image, 반실사 Illustrij v21, 영상 DaSiWa WAN 2.2 I2V
+- [x] 공식 Qwen·Wan, CyberRealistic, Realism Illustrious 빼기 (파일은 설정 → 안 쓰는 모델 파일에서 정리)
+- [x] Civitai(.com/.red) 주소만 붙이면 체크포인트를 추가하는 "모델 추가" 기능
+- [x] 편집 화면 "자세 바꾸기": 자세 사진이나 말로, 같은 사람·옷·배경에서 자세만 바꿈
+- [ ] 무검열 Qwen 2.1 "고품질 모드" (Noct Q V4 같은 Base 모델: 25~50스텝 설정 필요)
+- [ ] 영상용 성인 LoRA 고르기 (기본 영상이 집 PC에서 잘 나오는지 먼저 확인)
+- [ ] Qwen 2.1 LoRA 학습 시험 (7B라 16GB에서 될 수도 있음)
 
 ## 나중에
 - ChatGPT 연결 (Tailscale Funnel + OAuth 필요)

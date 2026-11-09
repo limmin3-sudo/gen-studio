@@ -630,7 +630,13 @@ const Editor = (() => {
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
   let detStrength = store.get('detStrength', 0.4), upRefine = store.get('upRefine', true);
-  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '480p');
+  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '480p'), reposeId = null;
+  $('#reposeIn').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const fd = new FormData(); fd.append('file', f, f.name);
+    try { const r = await req('POST', '/api/import', fd); reposeId = r.id; accOpen.add('repose'); paintPane(); toast('이 사진의 자세로 바꿔요. "자세 바꾸기"를 누르세요.'); }
+    catch (err) { toast(err.message); }
+  };
   const STRENGTH = {low: [0.35, '약하게'], mid: [0.55, '보통'], high: [0.75, '강하게']};
   let editMode = store.get('editMode', 'instruction');     // instruction (Qwen) | redraw (same model)
   let expandAspect = '3:4', expandAnchor = 'top';
@@ -735,6 +741,10 @@ const Editor = (() => {
           <div class="field"><span>길이</span><div class="seg2">${[3, 5].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div></div>
           <div class="field"><span>화질</span><div class="seg2">${['480p', '720p'].map(q => `<button data-vq="${q}" aria-pressed="${q === vidQ}">${q}${q === '720p' ? ' (느림)' : ''}</button>`).join('')}</div></div>
           <div class="field"><div class="seg2"><button id="makeVideo" aria-pressed="true">영상 만들기</button></div></div>`)
+        + acc('repose', '자세 바꾸기', '같은 사람·옷·배경, 자세만', `
+          <p class="note">원하는 자세가 담긴 사진을 넣거나, 아래 입력칸에 "침대에 앉아 다리를 꼬고 있다"처럼 적으세요. 둘 다 써도 돼요.</p>
+          <div class="field"><div class="seg2">${reposeId ? `<span class="ref"><img src="${thumbUrl(reposeId)}" alt=""><button type="button" data-act2="repose-clear" aria-label="자세 사진 빼기">×</button></span>` : ''}<button data-act2="repose-pick">${reposeId ? '다른 사진' : '자세 사진 넣기'}</button></div></div>
+          <div class="field"><div class="seg2"><button id="doRepose" aria-pressed="true">자세 바꾸기</button></div></div>`)
         + acc('person', '이 인물·자세 다시 쓰기', '캐릭터 등록, 포즈, 참고 이미지', `
           <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">이 사진만 등록</button></div></div>
           <div class="field"><div class="seg2"><button id="buildChar" aria-pressed="true">이 사진 1장으로 캐릭터 만들기</button></div>
@@ -784,6 +794,14 @@ const Editor = (() => {
     const asp = e.target.closest('[data-asp]'); if (asp) { expandAspect = asp.dataset.asp; paintPane(); }
     const anc = e.target.closest('[data-anc]'); if (anc) { expandAnchor = anc.dataset.anc; paintPane(); }
     if (e.target.closest('#doExpand')) submitEdit({mode: 'outpaint', aspect: expandAspect, anchor: expandAnchor, prompt: promptEl.value.trim()});
+    const a2 = e.target.closest('[data-act2]');
+    if (a2 && a2.dataset.act2 === 'repose-pick') { $('#reposeIn').click(); return; }
+    if (a2 && a2.dataset.act2 === 'repose-clear') { reposeId = null; paintPane(); return; }
+    if (e.target.closest('#doRepose') && rec && !busy) {
+      api.post(`/api/images/${rec.id}/repose`, {pose: reposeId, prompt: promptEl.value.trim()})
+        .then(j => runJob(j, `자세 바꾸기 · ${j.decision.model_name}`)).catch(err => toast(err.message, 6000));
+      return;
+    }
     const vs = e.target.closest('[data-vsec]'); if (vs) { vidSec = +vs.dataset.vsec; store.set('vidSec', vidSec); paintPane(); return; }
     const vq = e.target.closest('[data-vq]'); if (vq) { vidQ = vq.dataset.vq; store.set('vidQ', vidQ); paintPane(); return; }
     if (e.target.closest('#makeVideo')) { makeVideo(); return; }

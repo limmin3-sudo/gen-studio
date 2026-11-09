@@ -39,6 +39,7 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - Characters: build_character(name, image_id) turns ONE photo into a full character (face, full body, side
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
+- change_pose(image_id, pose_id or prompt) moves the person into a new pose, same person and background.
 - image_to_video(image_id, prompt="how it moves") makes a 3-5 s mp4 clip (several minutes).
 - upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
@@ -315,6 +316,20 @@ def build_mcp(state: "State") -> MCPServer:
                     "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
         return [{"image_id": image_id, "segments": _seg_list(image_id)},
                 MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+
+    @mcp.tool(description=(
+        "Change the pose of the person in an image, keeping the same person, clothing and background. Give a photo "
+        "whose pose to copy (pose_id / pose_path) and/or describe it in prompt ('sitting on the bed, legs crossed')."))
+    async def change_pose(image_id: str | None = None, image_path: str | None = None, pose_id: str | None = None,
+                          pose_path: str | None = None, prompt: str = "", wait_seconds: int = 90,
+                          include_image: bool = True):
+        from .jobs import ReposeRequest
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        if pose_path and not pose_id:
+            pose_id = _bring_in(None, [pose_path])[0]
+        job = state.engine.submit_repose(ReposeRequest(image_id=image_id, pose=pose_id, prompt=prompt))
+        return await _finish(job, wait_seconds, include_image)
 
     @mcp.tool(description=(
         "Turn an image into a short video clip (Wan 2.2 image-to-video). prompt: how things move, e.g. 'she turns "

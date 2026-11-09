@@ -431,3 +431,30 @@ def test_image_to_video(client, fake):
     assert client.post(f"/api/images/{rec['id']}/video", json={}).status_code == 400
     r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
     assert client.get(f"/api/images/{r['result_ids'][0]}").json()["media"] == "video"
+
+
+def test_change_pose(client, fake):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman standing", "aspect": "portrait"}).json()["id"])
+    img = j["result_ids"][0]
+    assert client.post(f"/api/images/{img}/repose", json={}).status_code == 400
+    # by words only
+    r = wait_job(client, client.post(f"/api/images/{img}/repose", json={"prompt": "sitting on a chair, legs crossed"}).json()["id"])
+    assert r["status"] == "done", r["error"]
+    g = list(fake.prompts.values())[-1]
+    enc = next(n for n in g.values() if n["class_type"] == "TextEncodeQwenImage21")["inputs"]
+    assert "sitting on a chair" in enc["prompt"] and "images.image_2" not in enc
+    # from a pose photo: image 2 is the skeleton drawn at the source size
+    im = Image.new("RGB", (600, 900), (30, 30, 30)); buf = io.BytesIO(); im.save(buf, "PNG")
+    photo = client.post("/api/import", files={"file": ("pose.png", buf.getvalue(), "image/png")}).json()["id"]
+    r = wait_job(client, client.post(f"/api/images/{img}/repose", json={"pose": photo}).json()["id"])
+    assert r["status"] == "done", r["error"]
+    g = list(fake.prompts.values())[-1]
+    enc = next(n for n in g.values() if n["class_type"] == "TextEncodeQwenImage21")["inputs"]
+    assert "images.image_2" in enc and "pose shown in image 2" in enc["prompt"]
+    pose_upload = g[enc["images.image_2"][0]]["inputs"]["image"]
+    with Image.open(io.BytesIO(fake.uploads[pose_upload])) as pm:
+        assert pm.size == (832, 1216)
+    rec = client.get(f"/api/images/{r['result_ids'][0]}").json()
+    assert rec["label"] == "자세 바꾸기" and rec["parent_id"] == img
+    again = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert again["status"] == "done"
