@@ -103,7 +103,10 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
 
     @app.post("/api/route")
     async def route_preview(req: GenerateRequest):
-        return engine.route(req).as_dict()
+        try:
+            return engine.plan(req)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
 
     @app.post("/api/generate")
     async def generate(req: GenerateRequest):

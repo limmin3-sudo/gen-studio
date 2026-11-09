@@ -131,7 +131,8 @@ class FakeComfy:
                                                for j in range(k)]}
                 if n["class_type"] == "PreviewAny":
                     gen = graph[n["inputs"]["source"][0]]["inputs"]
-                    reply = self.describe_reply if "images.image1" in gen else self.translate_reply(gen["prompt"])
+                    reply = (self.describe_reply if "images.image1" in gen and "image 1" not in gen["prompt"]
+                             else self.translate_reply(gen["prompt"]))
                     outputs[nid] = {"text": [reply]}
             return httpx.Response(200, json={pid: {"outputs": outputs, "status": {"status_str": "success", "completed": True}}})
         if path == "/view":

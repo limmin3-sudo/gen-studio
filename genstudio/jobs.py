@@ -41,6 +41,8 @@ class GenerateRequest(BaseModel):
     references: list[str] = Field(default_factory=list, description="참고 이미지 id (최대 10장)")
     loras: list[dict] = Field(default_factory=list, description="[{name, strength}] 적용할 LoRA")
     translate: bool | None = Field(None, description="한국어 자동 번역 (비우면 설정값)")
+    denoise: float | None = Field(None, ge=0.1, le=1.0,
+                                  description="참고 이미지 1장을 다른 화풍으로 다시 그릴 때 바꾸는 정도 (낮을수록 원본 유지)")
 
 
 ASPECTS = {"1:1": 1.0, "4:5": 0.8, "3:4": 0.75, "2:3": 2 / 3, "9:16": 9 / 16, "5:4": 1.25, "4:3": 4 / 3,
@@ -80,6 +82,30 @@ class SegmentRequest(BaseModel):
 
 
 import re as _re
+
+# "반실사로 만들어줘", "실사화", "그림체 바꿔": the reference is the picture itself, drawn again in another look
+RESTYLE_RX = _re.compile(r"(반\s*실사|실사|사진|semi[\s-]?real\w*|photo\w*|realistic)\s*(으로|로|화|느낌|버전|스타일|풍)"
+                         r"|그림체|화풍|변환|restyle|convert", _re.I)
+RESTYLE_DENOISE = {"semi": 0.55, "realistic": 0.6}
+RESTYLE_PIXELS = 1_100_000
+
+RESTYLE_TAGS = """Describe image 1 as a prompt for an Illustrious (SDXL) model: comma-separated English Danbooru-style
+tags, most important first (1girl/1boy and count, hair, face, body, clothing, pose, expression, place, lighting,
+camera angle and framing). Describe everything that is visible, faithfully. {extra}Reply with the tags only."""
+RESTYLE_SENTENCE = """Describe image 1 as a detailed English image-generation prompt in two or three sentences:
+subject, face, body, clothing, pose, expression, place, lighting, camera angle and framing. Describe everything that
+is visible, faithfully. {extra}Reply with the prompt only."""
+
+
+def restyle_size(w: int, h: int) -> tuple[int, int]:
+    s = (RESTYLE_PIXELS / (w * h)) ** 0.5
+    return router.snap(int(w * s)), router.snap(int(h * s))
+
+
+def restyle_instruction(request: str, family: str) -> str:
+    extra = (f"The user's request (it may be Korean): \"{request.strip()}\". Include any change it asks for; "
+             "ignore words about the art style. ") if request.strip() else ""
+    return (RESTYLE_TAGS if family == "illustrious" else RESTYLE_SENTENCE).format(extra=extra)
 
 # "show more of the body" needs a bigger canvas, not an edit inside the same frame
 _EXPAND_RULES = [
@@ -293,7 +319,8 @@ class Engine:
         cands.sort(key=lambda m: (m.installed(self.settings.models_dir) is False, m.role != "main"))
         return cands[0]
 
-    def submit_generate(self, req: GenerateRequest) -> Job:
+    def plan(self, req: GenerateRequest) -> dict:
+        """Which model and size a generate request will use (also shown live in the UI)."""
         d = self.route(req)
         decision = d.as_dict()
         loras, lfam = self.resolve_loras(req.loras)
@@ -307,6 +334,19 @@ class Engine:
             ids, char = self.resolve_refs(req.references, req.character)
             if len(ids) > 10:
                 raise ValueError("참고 이미지는 캐릭터 사진을 포함해 10장까지예요")
+            rm = self._restyle_model(req, d, ids, char, lfam)
+            if rm:
+                # one picture in another look: redraw it with the style's own model instead of Qwen
+                src = self.library.get(ids[0])
+                w, h = (router.snap(req.width), router.snap(req.height)) if req.width and req.height \
+                    else restyle_size(src["width"], src["height"])
+                style = rm.style if rm.style in router.STYLE_LABEL else d.style
+                decision.update(model_id=rm.id, model_name=rm.name, family=rm.family.id, style=style, ref_ids=ids,
+                                restyle=ids[0], width=w, height=h, aspect="custom", character=None,
+                                denoise=req.denoise or RESTYLE_DENOISE.get(style, 0.6))
+                decision["reasons"] = [f"참고 이미지를 {router.STYLE_LABEL.get(style, style)}(으)로 다시 그리기",
+                                       f"→ {rm.name}"]
+                return decision
             m = self._reference_model(req.model)
             if lfam and lfam != m.family.id:
                 raise ValueError("참고 이미지는 Qwen-Image 2.1로 그려서, 다른 모델용 LoRA와 같이 쓸 수 없어요")
@@ -314,6 +354,26 @@ class Engine:
                             character=char["name"] if char else None)
             decision["reasons"] = [f"캐릭터 '{char['name']}'" if char else f"참고 이미지 {len(ids)}장",
                                    "→ 참고 이미지를 따르는 Qwen-Image 2.1"]
+        return decision
+
+    def _restyle_model(self, req: GenerateRequest, d: router.Decision, ids: list[str], char: dict | None,
+                       lfam: str | None):
+        """A single reference + a different look (반실사로, 실사화, a non-Qwen model or LoRA) -> that model, else None."""
+        if char or len(ids) != 1:
+            return None
+        if req.model and req.model != "auto":
+            m = self.registry.get(req.model)
+            return None if m.family.encoder == "qwen21" else m
+        if lfam and lfam != "qwen21":
+            return self._model_for_family(lfam, None)
+        prompt, _ = router.split_negative(req.prompt)
+        wants = req.style == "semi" or d.style == "semi" or RESTYLE_RX.search(prompt)
+        if wants and d.model.family.encoder != "qwen21":
+            return d.model
+        return None
+
+    def submit_generate(self, req: GenerateRequest) -> Job:
+        decision = self.plan(req)
         job = Job(id=uuid.uuid4().hex[:12], kind="generate", request=req.model_dump(), decision=decision)
         return self._enqueue(job)
 
@@ -511,9 +571,15 @@ class Engine:
         prompt, neg_inline = router.split_negative(req.prompt)
         negative = ", ".join(x for x in (req.negative, neg_inline) if x)
         prompt_ko = prompt
-        prompt = await self._maybe_translate(job, prompt, model.family.id, req.translate)
+        restyle = job.decision.get("restyle")
+        if restyle:
+            src_name, prompt = await self._restyle_source(job, restyle, prompt, model)
+            ref_names = []
+        else:
+            prompt = await self._maybe_translate(job, prompt, model.family.id, req.translate)
         await self._switch_family(model.family.id)
-        ref_names = await self._upload_refs(job.decision.get("ref_ids") or [])
+        if not restyle:
+            ref_names = await self._upload_refs(job.decision.get("ref_ids") or [])
         loras = job.decision.get("loras") or []
         if loras:
             from .loras import apply_triggers
@@ -523,7 +589,11 @@ class Engine:
         n = req.count
         for i in range(n):
             seed = req.seed + i if req.seed >= 0 else random.randint(0, 2**31 - 1)
-            if ref_names:
+            if restyle:
+                graph, extra = workflows.img2img(
+                    model, src_name, prompt, negative, seed, job.decision["denoise"], models_dir=self.settings.models_dir,
+                    steps=req.steps, cfg=req.cfg, loras=loras)
+            elif ref_names:
                 graph, extra = workflows.reference(
                     model, ref_names, prompt, negative, seed, width=job.decision["width"], height=job.decision["height"],
                     models_dir=self.settings.models_dir, cfg=req.cfg, loras=loras)
@@ -538,7 +608,9 @@ class Engine:
                 "negative": negative,
                 "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id,
                 "style": job.decision["style"], "seed": seed, "steps": req.steps or model.family.steps,
-                "cfg": req.cfg if req.cfg is not None else model.family.cfg, "label": "원본",
+                "cfg": req.cfg if req.cfg is not None else model.family.cfg,
+                "label": f"{router.STYLE_LABEL.get(job.decision['style'], '')} 변환".strip() if restyle else "원본",
+                "denoise": job.decision.get("denoise") if restyle else None,
                 "ref_ids": job.decision.get("ref_ids") or [], "character": job.decision.get("character"),
                 "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             })
@@ -625,6 +697,32 @@ class Engine:
         if mask_bytes:
             self.library.update(rec["id"], mask_file=self.library.save_side_file(rec["id"], ".mask.png", mask_bytes))
         job.result_ids.append(rec["id"])
+
+    async def _restyle_source(self, job: Job, ref_id: str, request: str, model) -> tuple[str, str]:
+        """Upload the reference at the working size and describe it (plus the user's request) for the target model."""
+        path = self.library.path(ref_id)
+        if not path:
+            raise ComfyError(f"참고 이미지가 사라졌어요: {ref_id}")
+        w, h = job.decision["width"], job.decision["height"]
+        with Image.open(path) as im:
+            buf = io.BytesIO()
+            im.convert("RGB").resize((w, h), Image.LANCZOS).save(buf, "PNG")
+        name = await self.comfy.upload_image(buf.getvalue(), f"restyle-{ref_id}-{w}x{h}.png")
+        ref = self.library.get(ref_id) or {}
+        fallback = ", ".join(x for x in (ref.get("prompt_en") or ref.get("prompt") or "", request) if x)
+        vlm = self.vlm_file()
+        if not vlm:
+            return name, fallback
+        job.message = "참고 이미지를 읽는 중"
+        try:
+            outputs = await self.comfy.run_outputs(
+                workflows.describe_objects(name, vlm, restyle_instruction(request, model.family.id)))
+        except ComfyError:
+            return name, fallback
+        from . import translate as tr
+        text = tr.clean(output_text(outputs), fallback)
+        job.result["caption"] = text
+        return name, text
 
     async def _maybe_translate(self, job: Job, text: str, family: str, flag: bool | None) -> str:
         """Korean request -> English prompt for models that need it (uses the Qwen3-VL already downloaded)."""
@@ -728,7 +826,7 @@ class Engine:
                 width=rec["width"], height=rec["height"], steps=rec.get("steps"), cfg=rec.get("cfg"),
                 references=[r for r in rec.get("ref_ids") or []
                             if not rec.get("character") or r not in (self.characters.get(rec["character"]) or {}).get("ref_ids", [])],
-                character=rec.get("character"), loras=rec.get("loras") or []))
+                character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise")))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
             mask_b64 = None

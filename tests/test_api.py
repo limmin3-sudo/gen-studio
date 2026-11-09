@@ -188,3 +188,30 @@ def test_deleting_versions(client):
     # gallery X removes the whole set
     assert client.delete(f"/api/images/{ids[2]}?all_versions=true").json()["deleted"] == 2
     assert client.get(f"/api/images/{ids[1]}").status_code == 404
+
+
+def test_one_reference_restyled_with_style_model(client, fake):
+    im = Image.new("RGB", (1000, 1500), (90, 80, 70))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    ref = client.post("/api/import", files={"file": ("photo.png", buf.getvalue(), "image/png")}).json()["id"]
+    d = client.post("/api/route", json={"prompt": "반실사로 만들어봐", "style": "semi", "references": [ref]}).json()
+    assert d["model_id"] == "realism-illustrious" and d["restyle"] == ref
+    assert d["width"] * d["height"] <= 1_150_000 and abs(d["width"] / d["height"] - 1000 / 1500) < 0.03
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "반실사로 만들어봐", "references": [ref]}).json()["id"])
+    assert j["status"] == "done", j["error"]
+    graph = list(fake.prompts.values())[-1]
+    kinds = {n["class_type"] for n in graph.values()}
+    assert "VAEEncode" in kinds and "TextEncodeQwenImage21" not in kinds
+    ks = next(n for n in graph.values() if n["class_type"] == "KSampler")
+    assert ks["inputs"]["denoise"] == 0.55
+    text = next(n["inputs"]["text"] for n in graph.values() if n["class_type"] == "CLIPTextEncode")
+    assert "1girl" in text and "반실사" not in text           # described in tags, not the Korean request
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert rec["label"] == "반실사 변환" and rec["ref_ids"] == [ref]
+    # regenerating keeps the same path
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert client.get(f"/api/images/{r['result_ids'][0]}").json()["label"] == "반실사 변환"
+    # a plain reference request still goes to Qwen
+    d2 = client.post("/api/route", json={"prompt": "image 1 여자가 해변에 서 있는 사진", "references": [ref]}).json()
+    assert d2["model_id"] == "qwen-image-21-turbo" and "restyle" not in d2

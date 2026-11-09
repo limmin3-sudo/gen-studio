@@ -174,7 +174,14 @@ const Gen = (() => {
     const b = body();
     if (b.character || b.references.length) {
       const c = chars.find(x => x.id === b.character);
-      routeEl.innerHTML = `<span class="pill auto">자동 선택 → <b>Qwen-Image 2.1</b> · ${c ? `캐릭터 '${esc(c.name)}' 유지` : ''}${c && refs.length ? ' · ' : ''}${refs.length ? `참고 이미지 ${refs.length}장` : ''} <span class="hint">(프롬프트에서 "image 1", "image 2"로 가리킬 수 있어요)</span></span>`;
+      const what = `${c ? `캐릭터 '${esc(c.name)}' 유지` : ''}${c && refs.length ? ' · ' : ''}${refs.length ? `참고 이미지 ${refs.length}장` : ''}`;
+      try {
+        const d = await api.post('/api/route', {...b, prompt: b.prompt || ' '});
+        lastRoute = d;
+        routeEl.innerHTML = d.restyle
+          ? `<span class="pill auto">${b.model === 'auto' ? '자동 선택' : '직접 선택'} → <b>${esc(d.model_name)}</b> · ${what} · ${d.width}×${d.height}</span><span class="hint">참고 이미지를 ${({semi: '반실사', text: '글자·디자인'})[d.style] || '실사'}로 다시 그려요. 사람·포즈·구도는 따라가고 그림체만 바뀝니다.</span>`
+          : `<span class="pill auto">자동 선택 → <b>${esc(d.model_name)}</b> · ${what} <span class="hint">(프롬프트에서 "image 1", "image 2"로 가리킬 수 있어요)</span></span>${refs.length === 1 && !c ? '<span class="hint">그림체만 바꾸려면 "반실사로", "실사화"처럼 쓰거나 스타일을 반실사로 고르세요.</span>' : ''}`;
+      } catch (e) { routeEl.innerHTML = `<span class="hint">${esc(e.message)}</span>`; }
       return;
     }
     if (!b.prompt) { routeEl.innerHTML = `<span class="hint">한국어로 써도 됩니다. "실사", "반실사", "포스터", "세로" 같은 말을 넣으면 그에 맞춰 고릅니다. 이미지에 넣을 글자는 "따옴표"로 감싸세요.</span>`; return; }

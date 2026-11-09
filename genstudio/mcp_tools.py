@@ -183,15 +183,18 @@ def build_mcp(state: "State") -> MCPServer:
         reference_ids: list[str] | None = None,
         reference_paths: list[str] | None = None,
         loras: list[dict] | None = None,
+        denoise: float | None = None,
         wait_seconds: int = 45,
         include_image: bool = True,
     ):
         """character: a saved character name. reference_ids / reference_paths: images to follow
-        (people, outfits, places, style); refer to them in the prompt as image 1, image 2 ..."""
+        (people, outfits, places, style); refer to them in the prompt as image 1, image 2 ...
+        One reference + style='semi' (or "반실사로", "실사화", a non-Qwen model or LoRA) redraws that picture in the
+        new look with the style's own model; denoise 0.3-0.8 sets how much changes (default 0.55 semi, 0.6 real)."""
         refs = _bring_in(reference_ids, reference_paths)
         req = GenerateRequest(prompt=prompt, style=style, aspect=aspect, model=model, negative=negative,
                               seed=seed, count=max(1, min(count, 4)), character=character, references=refs,
-                              loras=loras or [])
+                              loras=loras or [], denoise=denoise)
         job = state.engine.submit_generate(req)
         return await _finish(job, wait_seconds, include_image)
 
