@@ -71,3 +71,17 @@ Request: """
 
 def edit_instruction(text: str) -> str:
     return EDIT + text.strip()
+
+
+EDIT_ENHANCE = """Expand the short image edit request below into a detailed, precise English instruction for an image editing model (inpaint / instruction edit).
+Focus on the selected area. Be explicit about clothing removal or change, anatomy, skin, pose, expression, and lighting.
+Always keep the same face, identity, body proportions, hair, pose (unless a new pose is requested), background, and lighting direction.
+If the request is about removing clothes (e.g. "뺗어", "다뺗고", "상의 뺗어"), specify the exact result: fully nude / topless / bra only / panties only / lingerie, natural skin texture, matching lighting and shadows.
+If a pose or expression is mentioned (M-shape, ahegao, doggy, missionary, cowgirl, etc.), describe it clearly and anatomically.
+Keep any quoted text exactly. Reply with the detailed instruction only.
+
+Request: """
+
+
+def edit_enhance_instruction(text: str) -> str:
+    return EDIT_ENHANCE + text.strip()
