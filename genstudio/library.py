@@ -1,0 +1,181 @@
+"""Image library: every generated, edited or imported image plus its metadata.
+
+Layout on disk:
+    outputs/2026-11-09/<id>.png     the image (ComfyUI metadata kept inside)
+    outputs/2026-11-09/<id>.json    our metadata (prompt, model, parent, ...)
+    outputs/.thumbs/<id>.jpg        small preview for the gallery
+"""
+from __future__ import annotations
+
+import io
+import json
+import threading
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from PIL import Image, PngImagePlugin
+
+MAX_IMPORT_PIXELS = 2_100_000   # ~1448x1448; keeps edits within 16GB VRAM
+
+
+def new_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+
+
+class Library:
+    def __init__(self, root: Path):
+        self.root = root
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / ".thumbs").mkdir(exist_ok=True)
+        self._lock = threading.Lock()
+        self._items: dict[str, dict] = {}
+        self._scan()
+
+    def _scan(self) -> None:
+        for meta in self.root.glob("*/*.json"):
+            try:
+                rec = json.loads(meta.read_text(encoding="utf-8"))
+                if (self.root / rec["file"]).exists():
+                    self._items[rec["id"]] = rec
+            except (OSError, ValueError, KeyError):
+                continue
+
+    # ------------------------------------------------------------ write
+    def add(self, png: bytes, meta: dict) -> dict:
+        iid = meta.get("id") or new_id()
+        day = datetime.now().strftime("%Y-%m-%d")
+        folder = self.root / day
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{iid}.png").write_bytes(png)
+        with Image.open(io.BytesIO(png)) as im:
+            w, h = im.size
+            self._thumb(im, iid)
+        parent = self._items.get(meta.get("parent_id") or "")
+        rec = {
+            "id": iid,
+            "file": f"{day}/{iid}.png",
+            "created_at": time.time(),
+            "width": w,
+            "height": h,
+            "root_id": parent["root_id"] if parent else iid,
+            **{k: v for k, v in meta.items() if k not in ("id",)},
+        }
+        (folder / f"{iid}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._lock:
+            self._items[iid] = rec
+        return rec
+
+    def import_image(self, data: bytes, filename: str = "image.png") -> dict:
+        """Bring an outside image in: fix orientation, keep size workable, remember any AI metadata."""
+        with Image.open(io.BytesIO(data)) as im:
+            embedded = _embedded_metadata(im)
+            try:
+                from PIL import ImageOps
+                im = ImageOps.exif_transpose(im)
+            except Exception:
+                pass
+            im = im.convert("RGBA") if im.mode in ("RGBA", "LA", "P") else im.convert("RGB")
+            w, h = im.size
+            scale = min(1.0, (MAX_IMPORT_PIXELS / (w * h)) ** 0.5)
+            nw, nh = max(16, int(w * scale) // 16 * 16), max(16, int(h * scale) // 16 * 16)
+            if (nw, nh) != (w, h):
+                im = im.resize((nw, nh), Image.LANCZOS)
+            if im.mode == "RGBA":
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, mask=im.split()[3])
+                im = bg
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+        return self.add(buf.getvalue(), {
+            "kind": "import",
+            "source": "import",
+            "original_name": filename,
+            "original_size": [w, h],
+            "embedded": embedded,
+            "prompt": embedded.get("prompt_text", ""),
+        })
+
+    def _thumb(self, im: Image.Image, iid: str) -> None:
+        t = im.convert("RGB")
+        t.thumbnail((320, 320))
+        t.save(self.root / ".thumbs" / f"{iid}.jpg", "JPEG", quality=82)
+
+    def update(self, iid: str, **fields) -> dict:
+        rec = self._items[iid]
+        rec.update(fields)
+        (self.root / rec["file"]).with_suffix(".json").write_text(
+            json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        return rec
+
+    def save_side_file(self, iid: str, suffix: str, data: bytes) -> str:
+        """Stores an extra file next to the image (e.g. the edit mask) and returns its library-relative path."""
+        p = (self.root / self._items[iid]["file"]).with_suffix(suffix)
+        p.write_bytes(data)
+        return str(p.relative_to(self.root)).replace("\\", "/")
+
+    def delete(self, iid: str) -> bool:
+        rec = self._items.pop(iid, None)
+        if not rec:
+            return False
+        p = self.root / rec["file"]
+        for f in (p, p.with_suffix(".json"), p.with_suffix(".mask.png"), self.root / ".thumbs" / f"{iid}.jpg"):
+            f.unlink(missing_ok=True)
+        return True
+
+    # ------------------------------------------------------------- read
+    def get(self, iid: str) -> dict | None:
+        return self._items.get(iid)
+
+    def path(self, iid: str) -> Path | None:
+        rec = self._items.get(iid)
+        return self.root / rec["file"] if rec else None
+
+    def thumb_path(self, iid: str) -> Path | None:
+        p = self.root / ".thumbs" / f"{iid}.jpg"
+        return p if p.exists() else self.path(iid)
+
+    def list(self, limit: int = 60, offset: int = 0, roots_only: bool = False) -> list[dict]:
+        items = sorted(self._items.values(), key=lambda r: r["created_at"], reverse=True)
+        if roots_only:
+            items = [r for r in items if r["root_id"] == r["id"]]
+        return items[offset: offset + limit]
+
+    def versions(self, iid: str) -> list[dict]:
+        rec = self._items.get(iid)
+        if not rec:
+            return []
+        root = rec["root_id"]
+        return sorted((r for r in self._items.values() if r["root_id"] == root), key=lambda r: r["created_at"])
+
+
+def _embedded_metadata(im: Image.Image) -> dict:
+    """Reads generation info other tools leave in PNG text chunks (ComfyUI, A1111/Forge, NovelAI)."""
+    info = getattr(im, "info", {}) or {}
+    out: dict = {}
+    if "prompt" in info or "workflow" in info:
+        out["tool"] = "ComfyUI"
+        try:
+            graph = json.loads(info.get("prompt", "{}"))
+            texts = [n["inputs"]["text"] for n in graph.values()
+                     if isinstance(n, dict) and n.get("class_type", "").startswith("CLIPTextEncode")
+                     and isinstance(n.get("inputs", {}).get("text"), str)]
+            if texts:
+                out["prompt_text"] = texts[0]
+        except (ValueError, AttributeError, KeyError):
+            pass
+    elif "parameters" in info:
+        out["tool"] = "A1111/Forge"
+        out["prompt_text"] = str(info["parameters"]).split("\nNegative prompt:")[0].strip()
+    elif info.get("Software", "").lower().startswith("novelai") or "Comment" in info:
+        out["tool"] = info.get("Software", "NovelAI")
+        out["prompt_text"] = str(info.get("Description", ""))
+    return out
+
+
+def png_bytes(im: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    pi = PngImagePlugin.PngInfo()
+    im.save(buf, "PNG", pnginfo=pi)
+    return buf.getvalue()

@@ -1,0 +1,28 @@
+# Gen Studio 설정
+# 경로는 슬래시(/)로 적어도 Windows에서 정상 동작합니다.
+# 상대경로는 이 프로젝트 폴더 기준입니다.
+
+comfyui:
+  # ComfyUI 서버 주소 (install.bat이 설치하는 포터블 버전 기본값)
+  url: "http://127.0.0.1:8188"
+  # ComfyUI 폴더 (models 폴더가 들어있는 곳). install.bat이 여기에 설치합니다.
+  path: "ComfyUI_windows_portable/ComfyUI"
+
+server:
+  # 항상 이 PC(127.0.0.1)에서만 열고, 다른 기기는 Tailscale을 거쳐서만 들어옵니다.
+  host: "127.0.0.1"
+  port: 7860
+  # 노트북 등 다른 기기(Tailscale)에서 접속 허용. 켜면 접속 토큰이 필요합니다.
+  # start-remote.bat 으로 실행하면 이 값과 상관없이 켜집니다.
+  remote_access: false
+
+# 생성 결과 저장 폴더
+output_dir: "outputs"
+
+gpu:
+  # 사용 가능한 VRAM(GB)
+  vram_gb: 16
+
+generation:
+  # 스타일이 문장에서 드러나지 않을 때 쓸 기본값: realistic(실사) / semi(반실사)
+  default_style: "realistic"

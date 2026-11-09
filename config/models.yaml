@@ -1,0 +1,95 @@
+# 모델 목록
+# 모델을 추가하려면 models 아래에 항목을 하나 더 적으면 됩니다.
+# file.dir 은 ComfyUI/models 아래 폴더 이름입니다.
+
+families:
+  zimage:
+    name: "Z-Image Turbo"
+    # unet = 본체만 있는 파일(텍스트 인코더/VAE 따로), checkpoint = 전부 들어있는 파일
+    loader: unet
+    clip: qwen_3_4b_fp8_mixed.safetensors
+    clip_type: lumina2
+    vae: ae.safetensors
+    latent: sd3
+    shift: 3
+    steps: 8
+    cfg: 1.0
+    sampler: res_multistep
+    scheduler: simple
+    negative: false          # Turbo 모델은 부정 프롬프트를 쓰지 않음
+    prompt_prefix: ""
+    files:
+      - name: qwen_3_4b_fp8_mixed.safetensors
+        dir: text_encoders
+        url: https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors
+        size: 5631994051
+        sha256: 72450b19758172c5a7273cf7de729d1c17e7f434a104a00167624cba94f68f15
+      - name: ae.safetensors
+        dir: vae
+        url: https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors
+        size: 335304388
+        sha256: afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38
+
+  illustrious:
+    name: "Illustrious (SDXL)"
+    loader: checkpoint
+    latent: sdxl
+    clip_skip: 2
+    steps: 28
+    cfg: 5.0
+    sampler: euler_ancestral
+    scheduler: normal
+    negative: true
+    prompt_prefix: "masterpiece, best quality, amazing quality, very aesthetic, "
+    negative_default: "lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, missing fingers, jpeg artifacts, watermark, signature, text, blurry"
+    files: []
+
+models:
+  - id: cyberrealistic-zit
+    name: "CyberRealistic Z-Image Turbo v10"
+    family: zimage
+    style: realistic
+    role: main
+    file:
+      name: CyberRealistic_zit_v10.0_fp8_e4m3.safetensors
+      dir: diffusion_models
+      civitai_version: 3411348
+      size: 6883550608
+      sha256: F74F5E7144B7922B57210EE223F37279CE9D6BBAF8724DD0F4B5412858A99A8A
+
+  - id: realdream-zit
+    name: "Real Dream ZIT v7"
+    family: zimage
+    style: realistic
+    role: alt
+    file:
+      name: real-dream-zit-7-fp8.safetensors
+      dir: diffusion_models
+      civitai_version: 3032830
+      size: 7245301944
+      sha256: 53453E27F156B24F90BEC2A862731EC34CBDCC1D559C2F58C0A7F826B947C216
+
+  - id: realism-illustrious
+    name: "Realism Illustrious v5.5 (Stable Yogi)"
+    family: illustrious
+    style: semi
+    role: main
+    prompt_prefix: "99bsy99, masterpiece, best quality, realistic, "
+    file:
+      name: "Realism By Stable Yogi Illustrious V5.5 CIV FP16.safetensors"
+      dir: checkpoints
+      civitai_version: 2831949
+      size: 6938040960
+      sha256: D6ED32169BD6605F1AA21A4F603799E3865E97B80A7DEDED0C4D8B0BF133D2A4
+
+  - id: semireal-mm
+    name: "Semi-Real (Illustrious) MM v5"
+    family: illustrious
+    style: semi
+    role: alt
+    file:
+      name: SemiRealMMv5.safetensors
+      dir: checkpoints
+      civitai_version: 3441825
+      size: 7105348384
+      sha256: 41B1A41B9C3539F8C6021EDC6A98E2237D5006B1473C311B5B1E2B3E7B92187C

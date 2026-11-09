@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# local data: generated images, secrets, downloads
+outputs/
+data/
+tools/
+ComfyUI_windows_portable/
+*.part

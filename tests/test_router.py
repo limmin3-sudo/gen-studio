@@ -1,0 +1,57 @@
+from genstudio import router
+from genstudio.registry import Registry
+
+REG = Registry.load()
+
+
+def pick(prompt, **kw):
+    return router.choose(REG, prompt, **kw)
+
+
+def test_default_style_is_realistic():
+    d = pick("a woman reading in a cafe")
+    assert d.style == "realistic"
+    assert d.model.id == "cyberrealistic-zit"
+    assert (d.width, d.height) == (1024, 1024)
+
+
+def test_semi_wins_over_realistic_substring():
+    # "반실사" contains "실사"; it must still route to semi-real
+    d = pick("반실사 느낌의 여자 캐릭터")
+    assert d.style == "semi"
+    assert d.model.id == "realism-illustrious"
+
+
+def test_realistic_keyword():
+    assert pick("인물 사진, 자연광").style == "realistic"
+    assert pick("raw photo of a sailor, 85mm").style == "realistic"
+
+
+def test_explicit_style_and_model():
+    assert pick("anything", style="semi").model.family.id == "illustrious"
+    d = pick("anything", model_id="semireal-mm")
+    assert d.model.id == "semireal-mm" and d.style == "semi"
+
+
+def test_aspect_detection():
+    assert pick("세로 전신 사진").aspect == "portrait"
+    assert pick("wide landscape at dusk").aspect == "landscape"
+    d = pick("x", aspect="tall")
+    assert (d.width, d.height) == (768, 1344)
+
+
+def test_custom_size_snaps_to_16():
+    d = pick("x", width=1010, height=1500)
+    assert (d.width, d.height) == (1008, 1504)
+
+
+def test_split_negative():
+    assert router.split_negative("a cat --no hat, text") == ("a cat", "hat, text")
+    assert router.split_negative("a cat") == ("a cat", "")
+
+
+def test_edit_uses_source_model():
+    m, why = router.model_for_edit(REG, "semireal-mm", None)
+    assert m.id == "semireal-mm"
+    m, why = router.model_for_edit(REG, None, None)
+    assert m.style == "realistic"
