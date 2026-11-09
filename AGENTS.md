@@ -25,3 +25,29 @@ engine; this repo is the orchestrator + web UI + desktop app + MCP server. UI te
 - `.bat`/`.ps1` files must keep CRLF line endings (see `.gitattributes`); `.ps1` files are UTF-8 with BOM.
 - When a ComfyUI node or graph is new, copy the settings from ComfyUI's official template/blueprint, not from memory.
 - The owner tests on the home PC and pastes the app's diagnostics (status bar → copy) when something fails.
+
+## Several AI tools work on this repo (Claude, Codex, Grok …) — read before every push
+- **Pull first, then test, then push.** `git fetch origin main` and merge (or rebase) before you start and again
+  before you push. Never force-push `main`.
+- **Run the tests** (`python -m pytest -q`) after merging other tools' work and before pushing. If they fail, fix or
+  ask; don't push red.
+- **Look at the diff before committing** (`git diff --stat` and the changed lines). A file that shrinks by hundreds
+  of lines, or turns into a single line, is almost always a mistake.
+- **Never write placeholders into real files** ("PLACEHOLDER", "...", "rest of file unchanged"). Edit the lines you
+  mean to change; if you can't see the whole file, read it first.
+- **Front end and back end together.** A handler for a new button needs the button in `web/index.html`
+  (`$('#id').onclick` on a missing element throws and stops the whole editor script) and a matching API route
+  that calls a method that actually exists.
+- **Don't drop existing routes** in `genstudio/app.py`: the MCP route (`app.router.routes.extend(mcp_app.routes)`),
+  the `ValueError` handler and the static mount must stay, in that order.
+- Prefer one tool pushing at a time. Say in the commit message what you changed and why.
+
+### What happened on 2026-11-09 (why the rules above exist)
+Seven commits pushed from another tool replaced `web/app.js` with the text `PLACEHOLDER_FULL_FILE` (the whole UI
+would not load), removed the MCP route and error handler from `app.py`, and added an `/api/enhance-edit` route that
+called a non-existent `engine.enhance_edit_prompt`. Merge `fd30ced` kept their history but restored the working
+files; the editor's ✨ button, `/api/enhance-edit` (`Engine.enhance_edit`) and its test came from `4be3a2d`. Their
+`translate.py` instruction text (explicit undressing / sex-position wording, commit `08adfc3`) was not merged:
+the tool's prompt helpers stay neutral and expand whatever the owner writes; the owner can restore that text
+from history if they want it.
+
