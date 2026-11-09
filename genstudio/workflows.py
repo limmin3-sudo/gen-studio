@@ -160,24 +160,68 @@ def img2img(model: ModelSpec, image_name: str, prompt: str, negative: str, seed:
     return g.nodes, {"final_prompt": text}
 
 
-def inpaint(model: ModelSpec, image_name: str, mask_name: str, prompt: str, negative: str, seed: int, *,
-            denoise: float = 1.0, grow: int = 12, models_dir: Path | None = None, steps: int | None = None,
-            cfg: float | None = None, prefix: str = "gen-studio/edit") -> tuple[dict, dict]:
-    """Redraws only the white area of the mask; everything else is pasted back untouched."""
-    g = Graph()
-    ms, c, v = _loaders(g, model, models_dir)
+def _masked_redraw(g: Graph, model: ModelSpec, ms: dict, c, v, src, mask, prompt: str, negative: str, seed: int,
+                   denoise: float, steps: int | None, cfg: float | None, prefix: str) -> str:
     ms = {k: out(g.add("DifferentialDiffusion", model=m)) for k, m in ms.items()}
     pos, neg, text = _conditioning(g, model, c, v, prompt, negative)
-    src = out(g.add("LoadImage", image=image_name))
-    mask = out(g.add("LoadImageMask", image=mask_name, channel="red"))
-    if grow:
-        mask = out(g.add("GrowMask", mask=mask, expand=int(grow), tapered_corners=True))
     latent = out(g.add("VAEEncode", pixels=src, vae=v))
     latent = out(g.add("SetLatentNoiseMask", samples=latent, mask=mask))
     s = _sampler(g, model, ms, pos, neg, latent, seed, denoise, steps, cfg)
     img = out(g.add("VAEDecode", samples=s, vae=v))
     merged = out(g.add("ImageCompositeMasked", destination=src, source=img, x=0, y=0, resize_source=False, mask=mask))
     g.add("SaveImage", filename_prefix=prefix, images=merged)
+    return text
+
+
+def inpaint(model: ModelSpec, image_name: str, mask_name: str, prompt: str, negative: str, seed: int, *,
+            denoise: float = 1.0, grow: int = 12, models_dir: Path | None = None, steps: int | None = None,
+            cfg: float | None = None, prefix: str = "gen-studio/edit") -> tuple[dict, dict]:
+    """Redraws only the white area of the mask; everything else is pasted back untouched."""
+    g = Graph()
+    ms, c, v = _loaders(g, model, models_dir)
+    src = out(g.add("LoadImage", image=image_name))
+    mask = out(g.add("LoadImageMask", image=mask_name, channel="red"))
+    if grow:
+        mask = out(g.add("GrowMask", mask=mask, expand=int(grow), tapered_corners=True))
+    text = _masked_redraw(g, model, ms, c, v, src, mask, prompt, negative, seed, denoise, steps, cfg, prefix)
+    return g.nodes, {"final_prompt": text}
+
+
+def outpaint(model: ModelSpec, image_name: str, pads: dict, prompt: str, negative: str, seed: int, *,
+             feathering: int = 40, models_dir: Path | None = None, steps: int | None = None, cfg: float | None = None,
+             prefix: str = "gen-studio/edit") -> tuple[dict, dict]:
+    """Extends the canvas (left/top/right/bottom pixels) and paints the new area to match."""
+    g = Graph()
+    ms, c, v = _loaders(g, model, models_dir)
+    src = out(g.add("LoadImage", image=image_name))
+    pad = g.add("ImagePadForOutpaint", image=src, left=int(pads.get("left", 0)), top=int(pads.get("top", 0)),
+                right=int(pads.get("right", 0)), bottom=int(pads.get("bottom", 0)), feathering=int(feathering))
+    text = _masked_redraw(g, model, ms, c, v, out(pad, 0), out(pad, 1), prompt, negative, seed, 1.0, steps, cfg, prefix)
+    return g.nodes, {"final_prompt": text}
+
+
+def reference(model: ModelSpec, image_names: list[str], prompt: str, negative: str, seed: int, *,
+              width: int | None = None, height: int | None = None, models_dir: Path | None = None,
+              cfg: float | None = None, prefix: str = "gen-studio/ref") -> tuple[dict, dict]:
+    """Qwen-Image 2.1 reference mode (official Turbo edit template).
+
+    image 1 is the picture being edited (or the main reference); output keeps its size unless width/height
+    are given. Up to 10 images: people, outfits, places or styles the prompt refers to as image 1, image 2 ...
+    """
+    if model.family.encoder != "qwen21":
+        raise ValueError("참고 이미지는 Qwen-Image 2.1에서만 쓸 수 있어요")
+    if not 1 <= len(image_names) <= 10:
+        raise ValueError("참고 이미지는 1~10장이에요")
+    g = Graph()
+    ms, c, v = _loaders(g, model, models_dir)
+    text = (model.prefix + prompt).strip()
+    neg_text = ", ".join(x for x in (negative.strip(), model.family.negative_default) if x)
+    images = {f"images.image_{i}": out(g.add("LoadImage", image=n)) for i, n in enumerate(image_names, 1)}
+    enc = g.add("TextEncodeQwenImage21", clip=c, prompt=text, negative_prompt=neg_text, vae=v, resolution=0, **images)
+    latent = _empty_latent(g, model, width, height) if width and height else out(enc, 2)
+    s = _sampler(g, model, ms, out(enc, 0), out(enc, 1), latent, seed, 1.0, None, cfg)
+    img = out(g.add("VAEDecode", samples=s, vae=v))
+    g.add("SaveImage", filename_prefix=prefix, images=img)
     return g.nodes, {"final_prompt": text}
 
 
@@ -191,4 +235,6 @@ REQUIRED_NODES = sorted({
     "SamplerCustomAdvanced",
     # Wan 2.2
     "ModelSamplingSD3", "LoraLoaderModelOnly", "KSamplerAdvanced", "EmptyHunyuanLatentVideo",
+    # canvas extension
+    "ImagePadForOutpaint",
 })

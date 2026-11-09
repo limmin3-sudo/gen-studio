@@ -100,7 +100,29 @@ const Gen = (() => {
   const sels = {style: $('#genStyle'), aspect: $('#genAspect'), count: $('#genCount'), model: $('#genModel')};
   const lbl = {style: $('#styleLbl'), aspect: $('#aspectLbl'), count: $('#countLbl'), model: $('#modelLbl')};
   const jobs = [];      // {id, status, progress, message, result_ids, error, prompt}
-  let recent = [], timer;
+  let recent = [], timer, refs = store.get('gen.refs', []), chars = [];
+  const charSel = $('#genChar'), refsEl = $('#genRefs');
+  async function loadChars() {
+    try { chars = await api.get('/api/characters'); } catch { chars = []; }
+    const keep = store.get('gen.character', '');
+    charSel.innerHTML = '<option value="">없음</option>' + chars.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+    charSel.value = chars.some(c => c.id === keep) ? keep : '';
+    $('#charLbl').textContent = charSel.selectedOptions[0]?.textContent || '없음';
+  }
+  charSel.addEventListener('change', () => { store.set('gen.character', charSel.value); $('#charLbl').textContent = charSel.selectedOptions[0].textContent; preview(); });
+  function renderRefs() {
+    refsEl.innerHTML = refs.map((id, i) => `<span class="ref"><img src="${thumbUrl(id)}" alt=""><i>${i + 1}</i><button type="button" data-unref="${id}" aria-label="참고 이미지 빼기">×</button></span>`).join('');
+  }
+  function setRefs(list) { refs = list.slice(0, 10); store.set('gen.refs', refs); renderRefs(); preview(); }
+  refsEl.addEventListener('click', e => { const b = e.target.closest('[data-unref]'); if (b) setRefs(refs.filter(r => r !== b.dataset.unref)); });
+  $('#addRef').onclick = () => $('#refIn').click();
+  $('#refIn').onchange = async e => {
+    for (const f of e.target.files) {
+      const fd = new FormData(); fd.append('file', f, f.name);
+      try { const r = await req('POST', '/api/import', fd); refs.push(r.id); } catch (err) { toast(err.message); }
+    }
+    e.target.value = ''; setRefs(refs);
+  };
   prompt.value = store.get('lastPrompt', '');
   for (const [k, s] of Object.entries(sels)) {
     s.value = store.get('gen.' + k, s.value) ?? s.value;
@@ -111,10 +133,16 @@ const Gen = (() => {
   prompt.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(preview, 250); store.set('lastPrompt', prompt.value); });
 
   function body() {
-    return {prompt: prompt.value.trim(), style: sels.style.value, aspect: sels.aspect.value, count: +sels.count.value, model: sels.model.value};
+    return {prompt: prompt.value.trim(), style: sels.style.value, aspect: sels.aspect.value, count: +sels.count.value,
+            model: sels.model.value, character: charSel.value || null, references: refs};
   }
   async function preview() {
     const b = body();
+    if (b.character || b.references.length) {
+      const c = chars.find(x => x.id === b.character);
+      routeEl.innerHTML = `<span class="pill auto">자동 선택 → <b>Qwen-Image 2.1</b> · ${c ? `캐릭터 '${esc(c.name)}' 유지` : ''}${c && refs.length ? ' · ' : ''}${refs.length ? `참고 이미지 ${refs.length}장` : ''} <span class="hint">(프롬프트에서 "image 1", "image 2"로 가리킬 수 있어요)</span></span>`;
+      return;
+    }
     if (!b.prompt) { routeEl.innerHTML = `<span class="hint">한국어로 써도 됩니다. "실사", "반실사", "포스터", "세로" 같은 말을 넣으면 그에 맞춰 고릅니다. 이미지에 넣을 글자는 "따옴표"로 감싸세요.</span>`; return; }
     try {
       const d = await api.post('/api/route', b);
@@ -153,7 +181,8 @@ const Gen = (() => {
     const c = e.target.closest('[data-cancel]'); if (!c) return;
     await api.post(`/api/jobs/${c.dataset.cancel}/cancel`).catch(() => {}); toast('취소를 요청했어요');
   });
-  return {show() { syncLabels(); loadRecent(); preview(); autoGrow(prompt); }};
+  return {show() { syncLabels(); loadChars().then(preview); renderRefs(); loadRecent(); autoGrow(prompt); },
+          addRef(id) { if (!refs.includes(id)) setRefs([...refs, id]); }};
 })();
 
 /* ============================================================== gallery */
@@ -193,6 +222,9 @@ const Editor = (() => {
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
   const STRENGTH = {low: [0.35, '약하게'], mid: [0.55, '보통'], high: [0.75, '강하게']};
+  let editMode = store.get('editMode', 'instruction');     // instruction (Qwen) | redraw (same model)
+  let expandAspect = '3:4', expandAnchor = 'top';
+  const qwenReady = () => MODELS.some(m => m.family === 'qwen21' && m.installed !== false);
   const REMOVE = /지워|지우|제거|없애|빼\s*줘|remove|erase|delete/i;
   bindEnter(promptEl, form);
   promptEl.addEventListener('input', paintRoute);
@@ -223,8 +255,8 @@ const Editor = (() => {
   function paintPane() {
     let h = '';
     if (tool === 'seg') {
-      h = `<h2>세그먼트 <span class="badge">2단계</span></h2>
-        <p class="note">사람, 머리카락, 옷 같은 부분을 자동으로 나눠서 목록으로 보여주는 기능은 2단계에서 연결됩니다. 지금은 <b>브러시</b>로 바꿀 부분을 칠하세요.</p>
+      h = `<h2>세그먼트 <span class="badge">곧 추가</span></h2>
+        <p class="note">사람, 머리카락, 옷 같은 부분을 자동으로 나눠서 목록으로 보여주는 기능은 지금 만드는 중입니다. 그전까지는 <b>브러시</b>로 바꿀 부분을 칠하세요.</p>
         <div class="seg2"><button data-goto="brush" aria-pressed="true">브러시로 칠하기</button></div>`;
     } else if (tool === 'brush') {
       h = `<h2>마스크 브러시</h2>
@@ -235,7 +267,13 @@ const Editor = (() => {
     } else if (tool === 'color') {
       h = `<h2>색상 <span class="badge">2단계</span></h2><p class="note">선택한 부분의 색만 바로 바꾸는 기능은 세그먼트와 함께 2단계에서 추가됩니다. 지금은 칠한 뒤 "빨간색으로"처럼 입력하면 됩니다.</p>`;
     } else if (tool === 'crop') {
-      h = `<h2>자르기 <span class="badge">3단계</span></h2><p class="note">이미지 일부를 잘라내거나, 바깥을 AI로 늘리는 기능은 3단계에서 추가됩니다.</p>`;
+      const ASP = ['3:4', '2:3', '9:16', '4:5', '1:1', '4:3', '3:2', '16:9'];
+      const ANC = [['top', '위에 붙이기'], ['center', '가운데'], ['bottom', '아래에 붙이기'], ['left', '왼쪽'], ['right', '오른쪽']];
+      h = `<h2>캔버스 늘리기</h2>
+        <p class="note">그림 바깥을 늘리고 새로 생긴 부분을 AI가 채웁니다. 얼굴만 나온 초상화를 허벅지까지 보이게 하려면 <b>3:4 · 위에 붙이기</b>를 고르세요. 아래 입력칸에 늘어난 부분에 그릴 내용을 적어도 됩니다.</p>
+        <div class="field"><span>새 비율 (지금 ${rec ? `${rec.width}×${rec.height}` : ''})</span><div class="seg2">${ASP.map(a => `<button data-asp="${a}" aria-pressed="${a === expandAspect}">${a}</button>`).join('')}</div></div>
+        <div class="field"><span>원래 그림 위치</span><div class="seg2">${ANC.map(([k, n]) => `<button data-anc="${k}" aria-pressed="${k === expandAnchor}">${n}</button>`).join('')}</div></div>
+        <div class="field"><div class="seg2"><button id="doExpand" aria-pressed="true">늘리기</button></div></div>`;
     } else {
       h = `<h2>그려서 지시 <span class="badge">3단계</span></h2><p class="note">이미지 위에 대충 그리고 "여기에 가방 추가"처럼 입력하면 그 모양대로 그려 넣는 기능입니다. 3단계에서 추가됩니다.</p>`;
     }
@@ -248,7 +286,10 @@ const Editor = (() => {
         <dt>모델</dt><dd>${esc(model?.name || rec.model_id || (rec.embedded?.tool ? rec.embedded.tool + ' (외부)' : '외부 이미지'))}</dd>
         <dt>크기</dt><dd>${rec.width}×${rec.height}</dd>
         ${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}
-        <dt>버전</dt><dd>${versions.findIndex(v => v.id === rec.id) + 1} / ${versions.length}</dd></dl>`;
+        <dt>버전</dt><dd>${versions.findIndex(v => v.id === rec.id) + 1} / ${versions.length}</dd></dl>
+        <h2 style="margin-top:18px">이 인물 다시 쓰기</h2>
+        <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">캐릭터로 등록</button></div></div>
+        <div class="field"><div class="seg2"><button id="useAsRef">생성 화면의 참고 이미지로 보내기</button></div></div>`;
     }
     pane.innerHTML = h;
   }
@@ -259,6 +300,17 @@ const Editor = (() => {
     const bm = e.target.closest('[data-bm]'); if (bm) { erasing = bm.dataset.bm === 'erase'; paintPane(); }
     if (e.target.closest('#bClear')) clearMask();
     if (e.target.closest('#bDelete')) startDelete();
+    const asp = e.target.closest('[data-asp]'); if (asp) { expandAspect = asp.dataset.asp; paintPane(); }
+    const anc = e.target.closest('[data-anc]'); if (anc) { expandAnchor = anc.dataset.anc; paintPane(); }
+    if (e.target.closest('#doExpand')) submitEdit({mode: 'outpaint', aspect: expandAspect, anchor: expandAnchor, prompt: promptEl.value.trim()});
+    if (e.target.closest('#useAsRef') && rec) { Gen.addRef(rec.id); toast('생성 화면의 참고 이미지에 넣었어요'); }
+    if (e.target.closest('#saveChar') && rec) {
+      const name = $('#charName').value.trim();
+      if (!name) { $('#charName').focus(); return; }
+      api.post('/api/characters', {name, ref_ids: [rec.id], description: ''})
+        .then(c => toast(`'${c.name}' 캐릭터로 등록했어요. 생성 화면의 캐릭터 메뉴에서 고르면 같은 인물로 그립니다.`, 5000))
+        .catch(err => toast(err.message, 5000));
+    }
   });
   function setAutoFill(on) {
     autoFill = on; store.set('autoFill', on);
@@ -293,10 +345,12 @@ const Editor = (() => {
       else if (REMOVE.test(t)) h += `<span class="pill auto">→ <b>삭제</b> 후 채울 내용을 물어봅니다</span>`;
       else h += `<span class="pill auto">자동 선택 → <b>부분 다시 그리기</b> · ${esc(modelName)} <span class="hint">(원본과 같은 모델)</span></span>`;
     } else if (t) {
-      h += `<span class="pill auto">자동 선택 → <b>전체 다시 그리기</b> · ${esc(modelName)}</span>`;
-      h += Object.entries(STRENGTH).map(([k, [, name]]) => `<button type="button" class="pill ${k === strength ? 'plain' : 'sug'}" data-strength="${k}">${name}</button>`).join('');
+      const mode = qwenReady() ? editMode : 'redraw';
+      if (qwenReady()) h += `<button type="button" class="pill ${mode === 'instruction' ? 'plain' : 'sug'}" data-emode="instruction">문장 편집 · Qwen</button><button type="button" class="pill ${mode === 'redraw' ? 'plain' : 'sug'}" data-emode="redraw">전체 다시 그리기 · 원본 모델</button>`;
+      if (mode === 'instruction') h += `<span class="hint">인물은 유지하고 말한 부분만 바꿔요. NSFW는 '다시 그리기'나 브러시가 맞아요.</span>`;
+      else h += Object.entries(STRENGTH).map(([k, [, name]]) => `<button type="button" class="pill ${k === strength ? 'plain' : 'sug'}" data-strength="${k}">${name}</button>`).join('') + `<span class="hint">${esc(modelName)}</span>`;
     } else {
-      h = `<span class="hint">바꿀 부분을 브러시로 칠하세요. 칠하지 않고 입력하면 이미지 전체를 살짝 다시 그립니다.</span>`;
+      h = `<span class="hint">바꿀 부분을 브러시로 칠하세요. 칠하지 않고 "배경을 우주선 함교로"처럼 입력하면 문장대로 편집합니다.</span>`;
     }
     routeEl.innerHTML = h;
     promptEl.placeholder = pending ? '삭제한 자리에 무엇을 그릴지 입력하세요' : (painted ? '칠한 부분을 무엇으로 바꿀까요?' : '바꿀 부분을 브러시로 칠하고 무엇으로 바꿀지 입력하세요');
@@ -307,6 +361,7 @@ const Editor = (() => {
     if (e.target.closest('[data-clear-mask]')) { clearMask(); return; }
     const s = e.target.closest('[data-sug]'); if (s) { promptEl.value = s.dataset.sug; paintRoute(); promptEl.focus(); return; }
     const st = e.target.closest('[data-strength]'); if (st) { strength = st.dataset.strength; store.set('strength', strength); paintRoute(); }
+    const em = e.target.closest('[data-emode]'); if (em) { editMode = em.dataset.emode; store.set('editMode', editMode); paintRoute(); }
   });
   routeEl.addEventListener('change', e => { if (e.target.id === 'askDefault') setAutoFill(e.target.checked); });
 
@@ -323,12 +378,14 @@ const Editor = (() => {
     if (pending) { if (t) submitEdit({mode: 'inpaint', fill: 'prompt', prompt: t}); return; }
     if (painted && REMOVE.test(t) && t.length <= 12) { startDelete(); return; }
     if (painted) { if (t) submitEdit({mode: 'inpaint', fill: 'prompt', prompt: t}); else promptEl.focus(); return; }
-    if (t) submitEdit({mode: 'variation', prompt: t, denoise: STRENGTH[strength][0]});
+    if (t && qwenReady() && editMode === 'instruction') submitEdit({mode: 'reference', prompt: t});
+    else if (t) submitEdit({mode: 'variation', prompt: t, denoise: STRENGTH[strength][0]});
   });
 
   async function submitEdit(opts) {
     if (busy || !rec) return;
-    const body = {image_id: rec.id, prompt: opts.prompt || '', mode: opts.mode, fill: opts.fill || 'prompt', denoise: opts.denoise ?? null};
+    const body = {image_id: rec.id, prompt: opts.prompt || '', mode: opts.mode, fill: opts.fill || 'prompt', denoise: opts.denoise ?? null,
+                  aspect: opts.aspect || null, anchor: opts.anchor || 'center'};
     if (opts.mode === 'inpaint') body.mask_png = cv.toDataURL('image/png');
     try {
       const j = await api.post('/api/edit', body);
@@ -399,7 +456,7 @@ const Editor = (() => {
     catch (e) { toast(e.message, 5000); }
   };
   $('#videoBtn').onclick = () => toast('동영상 만들기는 4단계에서 추가됩니다');
-  $('#arBtn').onclick = () => toast('종횡비 늘리기(아웃페인팅)는 3단계에서 추가됩니다');
+  $('#arBtn').onclick = () => setTool('crop');
   $('#copyBtn').onclick = async () => {
     const text = rec?.edit_prompt || rec?.prompt || '';
     try { await navigator.clipboard.writeText(text); toast('프롬프트를 복사했어요'); } catch { toast(text || '복사할 프롬프트가 없어요'); }

@@ -102,7 +102,10 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
 
     @app.post("/api/generate")
     async def generate(req: GenerateRequest):
-        return engine.submit_generate(req).public()
+        try:
+            return engine.submit_generate(req).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
 
     @app.post("/api/edit")
     async def edit(req: EditRequest):
@@ -156,6 +159,32 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         if not p:
             raise HTTPException(404, "이미지를 찾을 수 없어요")
         return FileResponse(p, headers={"Cache-Control": "max-age=86400"})
+
+    # ------------------------------------------------------------ characters
+    @app.get("/api/characters")
+    async def characters():
+        return [{**c, "thumbs": [f"/api/images/{r}/thumb" for r in c["ref_ids"]]} for c in engine.characters.list()]
+
+    @app.post("/api/characters")
+    async def save_character(body: dict):
+        try:
+            return engine.characters.save(body.get("name", ""), body.get("ref_ids") or [], body.get("description", ""),
+                                          body.get("id"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/characters/{cid}")
+    async def delete_character(cid: str):
+        return {"deleted": engine.characters.delete(cid)}
+
+    @app.post("/api/images/{image_id}/export")
+    async def export_image(image_id: str, body: dict):
+        try:
+            return library.export(image_id, Path(body["path"]), body.get("format"), body.get("max_side"),
+                                  body.get("width"), body.get("height"), int(body.get("quality", 90)),
+                                  bool(body.get("overwrite", False)))
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
 
     @app.post("/api/images/{image_id}/regenerate")
     async def regenerate(image_id: str):

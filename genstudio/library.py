@@ -91,6 +91,7 @@ class Library:
         return self.add(buf.getvalue(), {
             "kind": "import",
             "source": "import",
+            "label": "불러온 원본",
             "original_name": filename,
             "original_size": [w, h],
             "embedded": embedded,
@@ -114,6 +115,35 @@ class Library:
         p = (self.root / self._items[iid]["file"]).with_suffix(suffix)
         p.write_bytes(data)
         return str(p.relative_to(self.root)).replace("\\", "/")
+
+    def export(self, iid: str, dest: Path, fmt: str | None = None, max_side: int | None = None,
+               width: int | None = None, height: int | None = None, quality: int = 90, overwrite: bool = False) -> dict:
+        """Write a copy somewhere else (e.g. a project's assets folder), optionally resized and converted."""
+        src = self.path(iid)
+        if not src:
+            raise KeyError("이미지를 찾을 수 없어요")
+        dest = Path(dest).expanduser()
+        fmt = (fmt or dest.suffix.lstrip(".") or "png").lower().replace("jpeg", "jpg")
+        if fmt not in ("png", "webp", "jpg"):
+            raise ValueError("형식은 png, webp, jpg 중 하나예요")
+        if not dest.suffix:
+            dest = dest.with_suffix("." + fmt)
+        if dest.exists() and not overwrite:
+            raise ValueError(f"이미 파일이 있어요: {dest} (덮어쓰려면 overwrite)")
+        with Image.open(src) as im:
+            im = im.convert("RGB")
+            if width and height:
+                im = im.resize((int(width), int(height)), Image.LANCZOS)
+            elif width or height:
+                r = im.width / im.height
+                im = im.resize((int(width or round(height * r)), int(height or round(width / r))), Image.LANCZOS)
+            elif max_side and max(im.size) > max_side:
+                im.thumbnail((max_side, max_side), Image.LANCZOS)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            kw = {"webp": {"quality": quality, "method": 6}, "jpg": {"quality": quality, "optimize": True}, "png": {}}[fmt]
+            im.save(dest, {"jpg": "JPEG", "webp": "WEBP", "png": "PNG"}[fmt], **kw)
+            size = im.size
+        return {"path": str(dest), "format": fmt, "width": size[0], "height": size[1], "bytes": dest.stat().st_size}
 
     def delete(self, iid: str) -> bool:
         rec = self._items.pop(iid, None)
