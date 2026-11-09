@@ -71,3 +71,16 @@ Request: """
 
 def edit_instruction(text: str) -> str:
     return EDIT + text.strip()
+
+
+EDIT_ENHANCE = """Expand the image edit request below into a detailed English instruction for an image editing model.
+Say exactly what changes{where}, what it should look like afterwards, and that everything else stays the same
+(same person, face, body, pose, lighting and background). Keep every detail of the request and add nothing that
+contradicts it. Reply with the instruction only, in at most three sentences.
+
+Request: """
+
+
+def edit_enhance_instruction(text: str, names: list[str]) -> str:
+    where = f" in the selected area ({', '.join(names)})" if names else ""
+    return EDIT_ENHANCE.format(where=where) + text.strip()

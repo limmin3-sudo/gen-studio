@@ -145,6 +145,16 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
 
+    @app.post("/api/enhance-edit")
+    async def enhance_edit(body: dict):
+        text = str(body.get("prompt") or "").strip()
+        if not text:
+            raise HTTPException(400, "먼저 대충이라도 적어 주세요")
+        try:
+            return await engine.enhance_edit(text, body.get("image_id"), list(body.get("segments") or []))
+        except ComfyError as e:
+            raise HTTPException(502, str(e))
+
     @app.post("/api/enhance")
     async def enhance(req: GenerateRequest):
         try:

@@ -651,6 +651,22 @@ const Editor = (() => {
   const EXPAND_RX = /전신|발끝|발까지|신발까지|다리까지|무릎까지|허벅지까지|줌\s*아웃|멀리서|더 넓게|full[\s-]?body|zoom(ed)?[\s-]?out|wider shot/i;
   bindEnter(promptEl, form);
   promptEl.addEventListener('input', paintRoute);
+  $('#edEnhance').onclick = async () => {
+    const t = promptEl.value.trim();
+    if (!t) { promptEl.focus(); toast('먼저 대충이라도 적어 주세요'); return; }
+    const btn = $('#edEnhance');
+    if (btn.classList.contains('busy')) return;
+    btn.classList.add('busy');
+    try {
+      const segs = segSel.length ? segSel : [];
+      const r = await api.post('/api/enhance-edit', {prompt: t, segments: segs, image_id: rec ? rec.id : null});
+      promptEl.focus(); promptEl.select();
+      if (!document.execCommand('insertText', false, r.prompt)) promptEl.value = r.prompt;
+      autoGrow(promptEl);
+      toast('자세히 다듬었어요. 마음에 안 들면 Ctrl+Z', 4000);
+    } catch (e) { toast(e.message, 5000); }
+    finally { btn.classList.remove('busy'); }
+  };
 
   async function open(id) {
     if (!id) { location.hash = 'gallery'; return; }

@@ -191,3 +191,14 @@ def test_left_and_right_parts_are_merged():
                       {"label": "left foot", "ko": "왼발"}, {"label": "blonde hair", "ko": "금발"}])
     assert [(x["label"], x["ko"]) for x in parse_labels(txt)] == [
         ("arms", "팔"), ("legs", "다리"), ("feet", "발"), ("blonde hair", "금발")]
+
+
+def test_enhance_edit_request(client, fake):
+    img = imported(client, 512, 768)
+    segment(client, img)
+    r = client.post("/api/enhance-edit", json={"prompt": "셔츠 빨간색으로", "image_id": img, "segments": ["white collared shirt"]}).json()
+    assert r["prompt"] == "A woman sitting by a window in soft natural light." and r["segments"] == ["white collared shirt"]
+    g = list(fake.prompts.values())[-1]
+    gen = next(n for n in g.values() if n["class_type"] == "TextGenerateV2")["inputs"]
+    assert "selected area (white collared shirt)" in gen["prompt"] and "셔츠 빨간색으로" in gen["prompt"]
+    assert client.post("/api/enhance-edit", json={"prompt": " "}).status_code == 400

@@ -1535,6 +1535,17 @@ class Engine:
         job.result["caption"] = text
         return name, text
 
+    async def enhance_edit(self, text: str, image_id: str | None, segments: list[str]) -> dict:
+        """Short edit request -> detailed English edit instruction (shown to the user to edit before running)."""
+        from . import translate as tr
+        vlm = self.vlm_file()
+        if not vlm:
+            raise ValueError("편집 요청 다듬기에는 Qwen3-VL이 필요해요")
+        names = self._segment_names(image_id, segments) if image_id and segments else []
+        out = await self.comfy.run_outputs(workflows.rewrite_text(vlm, tr.edit_enhance_instruction(text, names),
+                                                                  max_length=200), timeout=180)
+        return {"prompt": tr.clean(output_text(out), text), "segments": names}
+
     async def enhance_prompt(self, req: GenerateRequest) -> dict:
         """Short request -> detailed prompt in the form the chosen model reads best (shown to the user to edit)."""
         from . import translate as tr
