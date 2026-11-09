@@ -286,6 +286,7 @@ const Gen = (() => {
     if (!b.prompt) { prompt.focus(); toast('먼저 대충이라도 적어 주세요'); return; }
     if (btn.classList.contains('busy')) return;
     btn.classList.add('busy');
+    toast('다듬는 중… 처음 한 번은 모델을 불러오느라 20~40초 걸릴 수 있어요', 4000);
     try {
       const r = await api.post('/api/enhance', b);
       prompt.focus(); prompt.select();
@@ -657,6 +658,7 @@ const Editor = (() => {
     const btn = $('#edEnhance');
     if (btn.classList.contains('busy')) return;
     btn.classList.add('busy');
+    toast('다듬는 중… 처음 한 번은 모델을 불러오느라 20~40초 걸릴 수 있어요', 4000);
     try {
       const segs = segSel.length ? segSel : [];
       const r = await api.post('/api/enhance-edit', {prompt: t, segments: segs, image_id: rec ? rec.id : null});
