@@ -306,8 +306,11 @@ MODIFY_RX = _re.compile(r"더|좀|조금|약간|살짝|하게|키워|줄여|늘�
 POSE_RX = _re.compile(r"자세|포즈|앉[아게은혀히는]|앉도록|누워|눕[게혀는]|엎드|무릎\s*꿇|쪼그려|쪼그리|"
                       r"다리\s*를?\s*(\S+\s+){0,2}(벌|꼬|모아|들어|올려|뻗)|양\s*다리|팔\s*을?\s*(\S+\s+){0,3}(들|올려|벌|뻗|모아)|"
                       r"뒤\s*돌|돌아\s*서|돌아\s*보|옆으로\s*(누|서|돌)|일어서|기대[어게]|점프|"
-                      r"\bsit(ting)?\b|\bkneel|\blying\b|\blie down|\bsquat|(spread|cross)\w*\s+(\w+\s+)?legs|"
-                      r"turn(ing)?\s+around|\bpose\b|\bposture\b|\bbend(ing)?\s+over", _re.I)
+                      r"[Mm]\s*자|\bsit(s|ting)?\b|\bseated\b|\bkneel|\blying\b|\blie(s)? (down|on)|\bsquat|"
+                      r"(spread|cross|open|raise|lift)\w*\s+(\w+\s+){0,2}(legs?|arms?|thighs?)|"
+                      r"(legs?|arms?|thighs?|knees?)\s+(\w+\s+){0,2}(spread|apart|open|wide|crossed|raised|up|bent|together)|"
+                      r"\bm[- ]?shape|on all fours|bent over|bend(s|ing)? over|turn(s|ing)?\s+around|facing away|"
+                      r"\bpose\b|\bposture\b|\bposition\b|hands? on (her|his|their) (hips|knees|head)", _re.I)
 
 ENLARGE_RX = _re.compile(r"키워|키우|크게|커지|늘려|늘리|길게|굵게|두껍|풍성|볼륨|넓게|부풀|bigger|larger|longer|thicker|"
                          r"fuller|wider|taller|enlarge|increase|grow", _re.I)

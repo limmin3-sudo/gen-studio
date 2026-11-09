@@ -218,3 +218,14 @@ def test_pose_requests_on_a_selection_redraw_the_whole_picture(client, fake):
     # an ordinary change on the selection stays a masked edit
     e = client.post("/api/edit", json={"image_id": img, "segments": ["white collared shirt"], "prompt": "빨간색으로"}).json()
     assert e["kind"] == "edit"
+
+
+def test_pose_words_after_the_enhance_button():
+    """The ✨ button turns requests into English; pose wording in either order must still be recognised."""
+    from genstudio.jobs import POSE_RX
+    for t in ("show the subject with legs spread wide in an M-shape", "seated with her knees apart", "on all fours",
+              "arms raised above her head", "M자로 다리벌리고", "spread her legs"):
+        assert POSE_RX.search(t), t
+    for t in ("Change the shirt to red leather", "Make the thighs more toned", "Make her hair longer",
+              "Remove the top, natural skin, same lighting and background"):
+        assert not POSE_RX.search(t), t
