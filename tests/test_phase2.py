@@ -122,3 +122,16 @@ def test_mcp_character_flow_and_export(client, tmp_path):
     out = tmp_path / "out" / "director-tutorial.webp"
     res = rpc(client, "tools/call", {"name": "export_image", "arguments": {"image_id": img, "path": str(out), "max_side": 512}})
     assert out.exists() and json.loads(res["content"][0]["text"])["format"] == "webp"
+
+
+def test_character_loose_names_and_aliases(tmp_path):
+    from genstudio.characters import Characters
+    cs = Characters(tmp_path / "c.json")
+    cs.save("플라이트 디렉터", ["a"], aliases=["director"])
+    cs.save("밀수 브로커", ["b"])
+    assert cs.get("디렉터")["name"] == "플라이트 디렉터"
+    assert cs.get("Director")["name"] == "플라이트 디렉터"
+    assert cs.get("플라이트디렉터")["name"] == "플라이트 디렉터"
+    assert cs.get("브로커")["name"] == "밀수 브로커"
+    assert cs.get("항해사") is None
+    assert Characters(tmp_path / "c.json").get("director")["aliases"] == ["director"]   # persisted

@@ -46,6 +46,7 @@ Qwen은 학습 단계에서 노출 표현이 약하므로, 인물 위주 이미�
 ## Codex·ChatGPT에서 쓰기
 
 - **Codex (집 PC)**: `connect-codex.bat` 을 실행하고 Codex 앱을 다시 시작하면 됩니다. 자세한 내용은 [docs/codex.md](docs/codex.md)를 보세요.
+- **다른 프로젝트에서 짧게 부탁하기**: 처음 한 번만 설정하면 "디렉터 튜토리얼 장면 하나 만들어줘"처럼 말해도 됩니다. [docs/project-setup.md](docs/project-setup.md)를 보세요.
 - **노트북에서 집 PC 쓰기**: Tailscale로 연결합니다. [docs/remote.md](docs/remote.md)를 보세요.
 - **ChatGPT**: ChatGPT는 인터넷에 공개된 HTTPS 주소와 OAuth 로그인이 필요합니다. 2단계에서 추가합니다.
 

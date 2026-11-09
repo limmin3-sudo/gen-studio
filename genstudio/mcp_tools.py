@@ -29,6 +29,11 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - Characters: create_character(name, image ids or paths) once, then generate_image(character=name, ...) keeps
   the same face and outfit across scenes (tutorials, series).
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
+
+Working style: users speak casually ("디렉터 튜토리얼 장면 하나", "브로커 허벅지까지 늘려줘"). Work out the details
+yourself: match people to saved characters (list_characters; loose names and aliases work), follow the project's
+AGENTS.md for where and how to save, pick sizes and file names, and only ask when something is truly ambiguous.
+Show the result image to the user and ask before overwriting files that already exist.
 - Calls wait up to wait_seconds (default 45, set 0 to return at once). If the job is not finished
   they return a job_id: poll get_job_status(job_id, wait_seconds=30) until status is done, then get_image.
 Images are referenced by image_id.
@@ -188,15 +193,17 @@ def build_mcp(state: "State") -> MCPServer:
 
     @mcp.tool(description="Save a character (name + 1-6 reference images) so later generations keep the same person.")
     async def create_character(name: str, image_ids: list[str] | None = None, image_paths: list[str] | None = None,
-                               description: str = ""):
+                               description: str = "", aliases: list[str] | None = None, replace: bool = False):
+        """aliases: other names people use, e.g. ["디렉터", "director"]. replace=true updates an existing one."""
         ids = _bring_in(image_ids, image_paths)
-        c = state.engine.characters.save(name, ids, description)
-        return {"character": c["name"], "id": c["id"], "reference_ids": c["ref_ids"]}
+        existing = state.engine.characters.get(name)
+        c = state.engine.characters.save(name, ids, description, existing["id"] if (existing and replace) else None, aliases)
+        return {"character": c["name"], "id": c["id"], "aliases": c["aliases"], "reference_ids": c["ref_ids"]}
 
     @mcp.tool(description="List saved characters.")
     async def list_characters():
-        return [{"name": c["name"], "id": c["id"], "description": c["description"], "reference_ids": c["ref_ids"]}
-                for c in state.engine.characters.list()]
+        return [{"name": c["name"], "id": c["id"], "aliases": c.get("aliases", []), "description": c["description"],
+                 "reference_ids": c["ref_ids"]} for c in state.engine.characters.list()]
 
     @mcp.tool(description=(
         "Copy an image into a folder on this PC, e.g. a project's assets. format: webp/png/jpg (default from the "
