@@ -14,7 +14,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image as MCPImage
 from PIL import Image
 
-from .jobs import CutoutRequest, EditRequest, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, EditRequest, GenerateRequest, SegmentRequest
 from .library import flat_rgb
 
 if TYPE_CHECKING:
@@ -36,8 +36,9 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   (ChatGPT, Claude; other hosts get the overview and a link). Prefer it when the user wants to pick parts by hand.
 - LoRAs: list_loras / add_lora; pass loras=[{"name": ..., "strength": 0.8}] and the matching model is chosen,
   trigger words are added automatically.
-- Characters: create_character(name, image ids or paths) once, then generate_image(character=name, ...) keeps
-  the same face and outfit across scenes (tutorials, series).
+- Characters: build_character(name, image_id) turns ONE photo into a full character (face, full body, side
+  shots + description); create_character(name, image ids or paths) saves existing pictures as one.
+  Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
   export it as png/webp to keep the transparency.
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
@@ -166,6 +167,10 @@ def build_mcp(state: "State") -> MCPServer:
         summary = {"job_id": job.id, "status": job.status, "progress": job.progress, "message": job.message,
                    "decision": job.decision, "error": job.error,
                    "images": [_info(i) for i in job.result_ids]}
+        if job.result.get("character"):
+            c = job.result["character"]
+            summary["character"] = {"name": c["name"], "id": c["id"], "description": c["description"],
+                                    "reference_ids": c["ref_ids"]}
         if job.status in ("queued", "running"):
             summary["next"] = "아직 진행 중이에요. get_job_status(job_id)로 확인한 뒤 get_image를 호출하세요."
         out: list = [summary]
@@ -314,6 +319,19 @@ def build_mcp(state: "State") -> MCPServer:
         existing = state.engine.characters.get(name)
         c = state.engine.characters.save(name, ids, description, existing["id"] if (existing and replace) else None, aliases)
         return {"character": c["name"], "id": c["id"], "aliases": c["aliases"], "reference_ids": c["ref_ids"]}
+
+    @mcp.tool(description=(
+        "Make a character from ONE photo: creates clean reference shots of the same person (views: face, full, "
+        "three_quarter, profile; default face+full+three_quarter), reads their look into a description, and saves "
+        "them all as a character for generate_image(character=name). Takes about a minute per view."))
+    async def build_character(name: str, image_id: str | None = None, image_path: str | None = None,
+                              views: list[str] | None = None, aliases: list[str] | None = None,
+                              wait_seconds: int = 120, include_image: bool = True):
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        req = CharacterBuildRequest(name=name, image_id=image_id, aliases=aliases or [],
+                                    **({"views": views} if views else {}))
+        return await _finish(state.engine.submit_character_build(req), wait_seconds, include_image)
 
     @mcp.tool(description="List saved characters.")
     async def list_characters():

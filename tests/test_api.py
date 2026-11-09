@@ -236,3 +236,27 @@ def test_remove_background(client, fake, tmp_path):
     r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
     assert client.get(f"/api/images/{r['result_ids'][0]}").json()["label"] == "배경 제거 (투명)"
     assert client.post(f"/api/images/{img}/remove-background", json={"background": "plaid"}).status_code == 400
+
+
+def test_build_character_from_one_photo(client, fake):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman", "aspect": "portrait"}).json()["id"])
+    img = j["result_ids"][0]
+    b = client.post("/api/characters/build", json={"name": "플라이트 디렉터", "image_id": img}).json()
+    assert b["decision"]["views"] == ["얼굴 정면", "전신", "3/4 측면"]
+    b = wait_job(client, b["id"])
+    assert b["status"] == "done", b["error"]
+    assert len(b["result_ids"]) == 3
+    c = b["result"]["character"]
+    assert c["ref_ids"] == [img, *b["result_ids"]] and "window" in c["description"]
+    sizes = [(client.get(f"/api/images/{i}").json()["width"], client.get(f"/api/images/{i}").json()["height"])
+             for i in b["result_ids"]]
+    assert sizes == [(1024, 1024), (832, 1216), (832, 1216)]
+    graph = list(fake.prompts.values())[-1]
+    enc = next(n for n in graph.values() if n["class_type"] == "TextEncodeQwenImage21")
+    assert "three-quarters" in enc["inputs"]["prompt"] and "The person:" in enc["inputs"]["prompt"]
+    assert [x["name"] for x in client.get("/api/characters").json()] == ["플라이트 디렉터"]
+    # same name again is refused before any work starts
+    assert client.post("/api/characters/build", json={"name": "플라이트 디렉터", "image_id": img}).status_code == 400
+    # and the new character drives generation through Qwen with all four pictures
+    g = client.post("/api/generate", json={"prompt": "사무실에서 웃는 사진", "character": "디렉터"}).json()
+    assert g["decision"]["ref_ids"] == c["ref_ids"]

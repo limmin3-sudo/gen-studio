@@ -14,7 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import __version__, router
 from .comfy import ComfyClient
 from .config import ROOT, Settings, access_token, load_settings
-from .jobs import CutoutRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -178,6 +178,19 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         try:
             return engine.characters.save(body.get("name", ""), body.get("ref_ids") or [], body.get("description", ""),
                                           body.get("id"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/characters/build")
+    async def build_character(body: dict):
+        """One photo -> face, full-body and side reference shots, saved together as a character."""
+        try:
+            req = CharacterBuildRequest(name=body.get("name") or "", image_id=body.get("image_id") or "",
+                                        **({"views": body["views"]} if body.get("views") else {}),
+                                        aliases=body.get("aliases") or [])
+            return engine.submit_character_build(req).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
         except ValueError as e:
             raise HTTPException(400, str(e))
 

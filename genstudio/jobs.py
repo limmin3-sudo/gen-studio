@@ -108,6 +108,29 @@ def compose_cutout(image: bytes, mask: bytes, background: tuple[int, int, int] |
     return buf.getvalue()
 
 
+class CharacterBuildRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    image_id: str
+    views: list[Literal["face", "full", "three_quarter", "profile"]] = Field(
+        default_factory=lambda: ["face", "full", "three_quarter"])
+    aliases: list[str] = Field(default_factory=list)
+
+
+_SHEET_BASE = ("Image 1 shows a person. Create a clean reference photo of exactly the same person: same face, "
+               "eyes, hair, skin, makeup, age and body. {view} Even soft studio lighting, plain light gray background.")
+CHARACTER_VIEWS = {
+    "face": ("얼굴 정면", "Head-and-shoulders portrait, facing the camera, neutral expression.", (1024, 1024)),
+    "full": ("전신", "Full-body photo standing straight and facing the camera, the whole body from head to feet "
+                     "visible, same outfit and shoes.", (832, 1216)),
+    "three_quarter": ("3/4 측면", "Upper-body photo with the face and body turned three-quarters to the side, "
+                                  "same outfit.", (832, 1216)),
+    "profile": ("옆모습", "Side profile of the head and shoulders, looking to the side.", (1024, 1024)),
+}
+DESCRIBE_PERSON = ("Describe the main person in image 1 so another picture can show the same person: apparent age "
+                   "range, face shape, eyes, nose, lips, skin tone, hair colour, length and style, body build, and "
+                   "outfit. One compact English paragraph under 60 words, no names. Reply with the description only.")
+
+
 class SegmentRequest(BaseModel):
     image_id: str
     labels: list[str] | None = Field(None, description="찾을 대상 (영어 명사). 비우면 자동으로 찾음")
@@ -516,6 +539,60 @@ class Engine:
                   decision={"action": action, "labeler": how, "model_name": "SAM 3.1"})
         return self._enqueue(job)
 
+    def submit_character_build(self, req: CharacterBuildRequest) -> Job:
+        if not self.library.get(req.image_id):
+            raise KeyError("이미지를 찾을 수 없어요")
+        existing = self.characters.get(req.name)
+        if existing and existing["name"] == req.name.strip():
+            raise ValueError(f"이미 같은 이름의 캐릭터가 있어요: {req.name}")
+        from .characters import MAX_REFS
+        views = list(dict.fromkeys(req.views))[: MAX_REFS - 1]
+        if not views:
+            raise ValueError("만들 사진 종류를 하나 이상 고르세요")
+        m = self._reference_model(None)
+        job = Job(id=uuid.uuid4().hex[:12], kind="character", request={**req.model_dump(), "views": views},
+                  decision={"action": "캐릭터 만들기", "model_id": m.id, "model_name": m.name, "family": m.family.id,
+                            "views": [CHARACTER_VIEWS[v][0] for v in views]})
+        return self._enqueue(job)
+
+    async def _run_character(self, job: Job) -> None:
+        req = CharacterBuildRequest(**job.request)
+        src = self.library.get(req.image_id)
+        path = self.library.path(req.image_id)
+        if not src or not path:
+            raise ComfyError("이미지가 사라졌어요")
+        model = self.registry.get(job.decision["model_id"])
+        name = await self.comfy.upload_image(path.read_bytes(), f"{src['id']}.png")
+        description = ""
+        vlm = self.vlm_file()
+        if vlm:
+            job.message = "인물 특징 읽는 중"
+            try:
+                from . import translate as tr
+                description = tr.clean(output_text(await self.comfy.run_outputs(
+                    workflows.describe_objects(name, vlm, DESCRIBE_PERSON, max_length=200))), "")
+            except ComfyError:
+                description = ""
+        await self._switch_family(model.family.id)
+        n = len(req.views)
+        for i, v in enumerate(req.views):
+            ko, view, (w, h) = CHARACTER_VIEWS[v]
+            job.message = f"{ko} 사진 만드는 중 ({i + 1}/{n})"
+            prompt = _SHEET_BASE.format(view=view) + (f" The person: {description}" if description else "")
+            seed = random.randint(0, 2**31 - 1)
+            graph, extra = workflows.reference(model, [name], prompt, "", seed, width=w, height=h,
+                                               models_dir=self.settings.models_dir)
+            outs = await self.comfy.run(graph, self._progress(job, i / n, 1 / n))
+            data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+            rec = self.library.add(data, {
+                "kind": "edit", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
+                "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id, "seed": seed,
+                "label": f"캐릭터: {req.name} · {ko}", "edit": {"mode": "character_sheet", "view": v},
+            })
+            job.result_ids.append(rec["id"])
+        char = self.characters.save(req.name, [src["id"], *job.result_ids], description, aliases=req.aliases)
+        job.result = {"character": char}
+
     def submit_cutout(self, req: CutoutRequest) -> Job:
         if not self.library.get(req.image_id):
             raise KeyError("이미지를 찾을 수 없어요")
@@ -615,6 +692,8 @@ class Engine:
                     await self._run_segment(job)
                 elif job.kind == "cutout":
                     await self._run_cutout(job)
+                elif job.kind == "character":
+                    await self._run_character(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -908,6 +987,8 @@ class Engine:
                 character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise")))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
+            if edit.get("mode") == "character_sheet":
+                raise ValueError("캐릭터 사진은 캐릭터 만들기로 다시 만들어 주세요")
             if edit.get("mode") == "cutout":
                 return self.submit_cutout(CutoutRequest(image_id=rec["parent_id"],
                                                         background=edit.get("background") or "transparent"))

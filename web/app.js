@@ -236,7 +236,8 @@ const Gen = (() => {
     await api.post(`/api/jobs/${c.dataset.cancel}/cancel`).catch(() => {}); toast('취소를 요청했어요');
   });
   return {show() { syncLabels(); loadChars().then(preview); loadLoras(); renderRefs(); loadRecent(); autoGrow(prompt); },
-          addRef(id) { if (!refs.includes(id)) setRefs([...refs, id]); }};
+          addRef(id) { if (!refs.includes(id)) setRefs([...refs, id]); },
+          reloadChars() { return loadChars(); }};
 })();
 
 /* ============================================================== gallery */
@@ -422,7 +423,9 @@ const Editor = (() => {
         ${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}
         <dt>버전</dt><dd>${versions.findIndex(v => v.id === rec.id) + 1} / ${versions.length}</dd></dl>
         <h2 style="margin-top:18px">이 인물 다시 쓰기</h2>
-        <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">캐릭터로 등록</button></div></div>
+        <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">이 사진만 등록</button></div></div>
+        <div class="field"><div class="seg2"><button id="buildChar" aria-pressed="true">이 사진 1장으로 캐릭터 만들기</button></div>
+          <p class="note" style="margin-top:6px">얼굴 정면·전신·3/4 측면 사진을 새로 만들고 인물 특징을 읽어서 함께 등록해요. 같은 사람으로 더 잘 그려집니다. (Qwen-Image 2.1, 3장 몇 분)</p></div>
         <div class="field"><div class="seg2"><button id="useAsRef">생성 화면의 참고 이미지로 보내기</button></div></div>`;
     }
     pane.innerHTML = h;
@@ -452,6 +455,18 @@ const Editor = (() => {
       return;
     }
     if (e.target.closest('#useAsRef') && rec) { Gen.addRef(rec.id); toast('생성 화면의 참고 이미지에 넣었어요'); }
+    if (e.target.closest('#buildChar') && rec && !busy) {
+      const name = $('#charName').value.trim();
+      if (!name) { $('#charName').focus(); toast('캐릭터 이름을 먼저 적어 주세요'); return; }
+      api.post('/api/characters/build', {name, image_id: rec.id})
+        .then(j => runJob(j, `캐릭터 만들기 · ${name}`).then(done => {
+          if (!done || done.status !== 'done') return;
+          Gen.reloadChars();
+          toast(`'${name}' 캐릭터를 만들었어요. 생성 화면의 캐릭터 메뉴에서 고르면 같은 인물로 그립니다.`, 6000);
+        }))
+        .catch(err => toast(err.message, 6000));
+      return;
+    }
     if (e.target.closest('#saveChar') && rec) {
       const name = $('#charName').value.trim();
       if (!name) { $('#charName').focus(); return; }
@@ -707,6 +722,7 @@ const Editor = (() => {
         location.hash = 'edit=' + done.result_ids[0];
       } else if (done.status === 'error') toast('실패: ' + done.error, 7000);
       else toast('취소했어요');
+      return done;
     } finally { ov.remove(); busy = null; }
   }
 
