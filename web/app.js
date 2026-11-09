@@ -507,6 +507,7 @@ const Editor = (() => {
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
   let detStrength = store.get('detStrength', 0.4), upRefine = store.get('upRefine', true);
+  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '480p');
   const STRENGTH = {low: [0.35, '약하게'], mid: [0.55, '보통'], high: [0.75, '강하게']};
   let editMode = store.get('editMode', 'instruction');     // instruction (Qwen) | redraw (same model)
   let expandAspect = '3:4', expandAnchor = 'top';
@@ -528,16 +529,25 @@ const Editor = (() => {
     const model = MODELS.find(m => m.id === rec.model_id);
     $('#edSub').textContent = [rec.label, model?.name, `${rec.width}×${rec.height}`].filter(Boolean).join(' · ');
     img.onload = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; painted = false; fit(); };
-    img.src = imgUrl(rec.id, Math.round(rec.created_at));
+    const isVideo = rec.media === 'video';
+    view.classList.toggle('is-video', isVideo);
+    imgbox.querySelector('video')?.remove();
+    img.src = isVideo ? thumbUrl(rec.id) + '?v=' + Math.round(rec.created_at) : imgUrl(rec.id, Math.round(rec.created_at));
+    if (isVideo) {
+      const vid = document.createElement('video');
+      Object.assign(vid, {src: imgUrl(rec.id, Math.round(rec.created_at)), controls: true, loop: true, autoplay: true, muted: true, playsInline: true});
+      imgbox.appendChild(vid);
+    }
     $('#saveBtn').href = `/api/images/${rec.id}/file?download=1`;
+    $('#saveBtn').querySelector('span') && ($('#saveBtn').querySelector('span').textContent = isVideo ? 'MP4로 저장' : 'PNG로 저장');
     $('#regenBtn').disabled = rec.kind === 'import';
     segs = []; segSel = []; segHover = null; segState = 'idle'; segHits = {}; paintSegLayer();
     paintRail(); paintPane(); paintRoute();
-    loadSegments(true);
+    if (!isVideo) loadSegments(true);
   }
 
   function paintRail() {
-    rail.innerHTML = versions.map((v, i) => `<span class="vw"><button class="vt ${v.id === rec.id ? 'cur' : ''}" data-id="${v.id}" title="${i + 1}. ${esc(v.label || '')}" aria-label="버전 ${i + 1}: ${esc(v.label || '')}"><img src="${thumbUrl(v.id)}" alt=""></button><button class="vx" data-vdel="${v.id}" title="이 버전 삭제" aria-label="버전 ${i + 1} 삭제">×</button></span>`).join('');
+    rail.innerHTML = versions.map((v, i) => `<span class="vw"><button class="vt ${v.id === rec.id ? 'cur' : ''}" data-id="${v.id}" title="${i + 1}. ${esc(v.label || '')}" aria-label="버전 ${i + 1}: ${esc(v.label || '')}"><img src="${thumbUrl(v.id)}" alt="">${v.media === 'video' ? '<b class="play">▶</b>' : ''}</button><button class="vx" data-vdel="${v.id}" title="이 버전 삭제" aria-label="버전 ${i + 1} 삭제">×</button></span>`).join('');
   }
   rail.addEventListener('click', async e => {
     const x = e.target.closest('[data-vdel]');
@@ -557,6 +567,13 @@ const Editor = (() => {
 
   /* ------------ side pane */
   function paintPane() {
+    if (rec && rec.media === 'video') {
+      pane.innerHTML = `<h2>영상</h2><dl class="kv">
+        <dt>길이</dt><dd>${Number(rec.duration).toFixed(1)}초 · ${rec.fps}fps · ${rec.frames}프레임</dd><dt>크기</dt><dd>${rec.width}×${rec.height}</dd>
+        ${rec.edit_prompt ? `<dt>움직임</dt><dd>${esc(rec.edit_prompt)}</dd>` : ''}${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}</dl>
+        <p class="note">영상은 편집할 수 없어요. 왼쪽 버전 목록에서 원본 이미지를 골라 다시 만들거나, 아래 재생성으로 새 시드로 다시 만들 수 있어요.</p>`;
+      return;
+    }
     let h = '';
     if (tool === 'seg') {
       h = segPaneHtml();
@@ -582,6 +599,11 @@ const Editor = (() => {
     h += `<label class="switch" style="margin:4px 0 16px"><input type="checkbox" id="autoFillToggle" ${autoFill ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>`;
     if (rec) {
       const model = MODELS.find(m => m.id === rec.model_id);
+      h += `<h2>영상 만들기</h2>
+        <p class="note">이 이미지를 움직이는 짧은 영상으로 만듭니다 (Wan 2.2). 아래 입력칸에 "고개를 돌리며 웃는다, 머리카락이 바람에 날린다"처럼 움직임을 적으세요. 비우면 자연스럽게 살짝 움직여요. 몇 분 걸려요.</p>
+        <div class="field"><span>길이</span><div class="seg2">${[3, 5].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div></div>
+        <div class="field"><span>화질</span><div class="seg2">${['480p', '720p'].map(q => `<button data-vq="${q}" aria-pressed="${q === vidQ}">${q}${q === '720p' ? ' (느림)' : ''}</button>`).join('')}</div></div>
+        <div class="field"><div class="seg2"><button id="makeVideo" aria-pressed="true">영상 만들기</button></div></div>`;
       h += `<h2>업스케일</h2>
         <p class="note">크게 키운 뒤 피부·머리카락·옷감 디테일을 살짝 다시 그립니다. 새 버전으로 저장돼요. (지금 ${rec.width}×${rec.height})</p>
         <div class="field"><div class="seg2"><button data-up="2">2배 (약 2K)</button><button data-up="4">4배 (약 4K)</button></div></div>
@@ -631,6 +653,9 @@ const Editor = (() => {
     const asp = e.target.closest('[data-asp]'); if (asp) { expandAspect = asp.dataset.asp; paintPane(); }
     const anc = e.target.closest('[data-anc]'); if (anc) { expandAnchor = anc.dataset.anc; paintPane(); }
     if (e.target.closest('#doExpand')) submitEdit({mode: 'outpaint', aspect: expandAspect, anchor: expandAnchor, prompt: promptEl.value.trim()});
+    const vs = e.target.closest('[data-vsec]'); if (vs) { vidSec = +vs.dataset.vsec; store.set('vidSec', vidSec); paintPane(); return; }
+    const vq = e.target.closest('[data-vq]'); if (vq) { vidQ = vq.dataset.vq; store.set('vidQ', vidQ); paintPane(); return; }
+    if (e.target.closest('#makeVideo')) { makeVideo(); return; }
     const up = e.target.closest('[data-up]');
     if (up && rec && !busy) {
       api.post(`/api/images/${rec.id}/upscale`, {scale: +up.dataset.up, refine: upRefine, prompt: promptEl.value.trim()})
@@ -684,7 +709,7 @@ const Editor = (() => {
     view.classList.toggle('tool-seg', t === 'seg');
     store.set('tool', t);
     paintPane();
-    if (t === 'seg' && rec && segState === 'idle') analyze();
+    if (t === 'seg' && rec && rec.media !== 'video' && segState === 'idle') analyze();
   }
   document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
   setTimeout(() => setTool(tool), 0);
@@ -971,7 +996,15 @@ const Editor = (() => {
     try { const j = await api.post(`/api/images/${rec.id}/regenerate`); await runJob(j, `같은 설정, 새 시드로 다시 만드는 중 · ${j.decision.model_name}`); }
     catch (e) { toast(e.message, 5000); }
   };
-  $('#videoBtn').onclick = () => toast('동영상 만들기는 4단계에서 추가됩니다');
+  async function makeVideo() {
+    if (!rec || busy) return;
+    if (rec.media === 'video') { toast('영상에서 다시 영상을 만들 수는 없어요. 원본 이미지를 고르세요.'); return; }
+    try {
+      const j = await api.post(`/api/images/${rec.id}/video`, {prompt: promptEl.value.trim(), seconds: vidSec, quality: vidQ});
+      await runJob(j, `${j.decision.action} · ${j.decision.width}×${j.decision.height} · Wan 2.2`);
+    } catch (e) { toast(e.message, 6000); }
+  }
+  $('#videoBtn').onclick = makeVideo;
   $('#arBtn').onclick = () => setTool('crop');
   $('#copyBtn').onclick = async () => {
     const text = rec?.edit_prompt || rec?.prompt || '';

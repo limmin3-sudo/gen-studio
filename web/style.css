@@ -289,3 +289,10 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .posestr{display:inline-flex;gap:4px;align-self:center}
 .posestr button{height:28px;padding:0 10px;border-radius:14px;background:var(--chip);font-size:12.5px}
 .posestr button[aria-pressed=true]{background:var(--fg);color:var(--bg)}
+
+/* video clips in the editor */
+.imgbox video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.editor.is-video #mask,.editor.is-video #segLayer{display:none}
+.editor.is-video .tools [data-tool]{opacity:.35;pointer-events:none}
+.vt{position:relative}
+.vt .play{position:absolute;right:4px;bottom:4px;width:18px;height:18px;border-radius:9px;background:rgba(0,0,0,.65);color:#fff;font-size:9px;display:grid;place-items:center}

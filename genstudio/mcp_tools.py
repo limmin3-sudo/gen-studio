@@ -39,6 +39,7 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - Characters: build_character(name, image_id) turns ONE photo into a full character (face, full body, side
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
+- image_to_video(image_id, prompt="how it moves") makes a 3-5 s mp4 clip (several minutes).
 - upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
@@ -129,6 +130,8 @@ def build_mcp(state: "State") -> MCPServer:
         path = state.library.path(image_id)
         if not path:
             raise ValueError(f"이미지를 찾을 수 없어요: {image_id}")
+        if (state.library.get(image_id) or {}).get("media") == "video":
+            path = state.library.thumb_path(image_id)       # poster frame for clips
         with Image.open(path) as im:
             im = flat_rgb(im)
             if max(im.size) > max_side:
@@ -150,6 +153,7 @@ def build_mcp(state: "State") -> MCPServer:
             "parent_id": rec.get("parent_id"),
             "file": str(state.library.path(image_id)),
             "editor_url": f"{state.public_base()}/#edit={image_id}",
+            **({"media": "video", "duration": rec.get("duration"), "fps": rec.get("fps")} if rec.get("media") == "video" else {}),
         }
 
     def _bring_in(ids: list[str] | None, paths: list[str] | None, b64s: list[str] | None = None) -> list[str]:
@@ -311,6 +315,26 @@ def build_mcp(state: "State") -> MCPServer:
                     "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
         return [{"image_id": image_id, "segments": _seg_list(image_id)},
                 MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+
+    @mcp.tool(description=(
+        "Turn an image into a short video clip (Wan 2.2 image-to-video). prompt: how things move, e.g. 'she turns "
+        "her head and smiles, hair moving in the wind' (empty = natural subtle motion). seconds 3 or 5, quality "
+        "480p (faster) or 720p. Takes several minutes: returns a job_id to poll; the result is an mp4 in the library."))
+    async def image_to_video(image_id: str | None = None, image_path: str | None = None, prompt: str = "",
+                             seconds: int = 5, quality: str = "480p", wait_seconds: int = 30):
+        from .jobs import VideoRequest
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        job = state.engine.submit_video(VideoRequest(image_id=image_id, prompt=prompt, seconds=3 if seconds <= 3 else 5,
+                                                     quality="720p" if str(quality).startswith("720") else "480p"))
+        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
+        out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
+               "decision": job.decision}
+        if job.status == "done":
+            out["video"] = _info(job.result_ids[0])
+        else:
+            out["next"] = "영상은 몇 분 걸려요. get_job_status(job_id)로 확인하세요."
+        return out
 
     @mcp.tool(description=(
         "Upscale an image 2x (about 2K) or 4x (about 4K). refine (default on) lightly redraws at the new size so "

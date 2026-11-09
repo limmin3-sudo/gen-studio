@@ -15,7 +15,7 @@ from . import __version__, router
 from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
-from .jobs import CharacterBuildRequest, CutoutRequest, UpscaleRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -201,7 +201,8 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         p = library.path(image_id)
         if not p:
             raise HTTPException(404, "이미지를 찾을 수 없어요")
-        return FileResponse(p, media_type="image/png", filename=p.name if download else None)
+        media = {".mp4": "video/mp4", ".webm": "video/webm", ".webp": "image/webp"}.get(p.suffix.lower(), "image/png")
+        return FileResponse(p, media_type=media, filename=p.name if download else None)
 
     @app.get("/api/images/{image_id}/thumb")
     async def image_thumb(image_id: str):
@@ -248,6 +249,17 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
                                   bool(body.get("overwrite", False)))
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
+
+    @app.post("/api/images/{image_id}/video")
+    async def make_video(image_id: str, body: dict | None = None):
+        body = body or {}
+        try:
+            return engine.submit_video(VideoRequest(image_id=image_id, **{k: v for k, v in body.items()
+                                                                         if k in ("prompt", "seconds", "quality", "seed")})).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.post("/api/images/{image_id}/upscale")
     async def upscale(image_id: str, body: dict | None = None):

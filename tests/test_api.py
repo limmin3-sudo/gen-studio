@@ -401,3 +401,33 @@ def test_pose_from_photo(client, fake):
     enc = next(n for n in g.values() if n["class_type"] == "TextEncodeQwenImage21")["inputs"]
     assert "images.image_2" in enc and "pose shown in image 2" in enc["prompt"]
     assert q["status"] == "done" and s["status"] == "done"
+
+
+def test_image_to_video(client, fake):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman on a beach", "aspect": "portrait"}).json()["id"])
+    img = j["result_ids"][0]
+    v = client.post(f"/api/images/{img}/video", json={"prompt": "머리카락이 바람에 날리고 웃는다", "seconds": 3}).json()
+    d = v["decision"]
+    assert d["frames"] == 49 and d["width"] % 16 == 0 and d["height"] > d["width"]
+    assert abs(d["width"] * d["height"] - 832 * 480) < 20000
+    v = wait_job(client, v["id"])
+    assert v["status"] == "done", v["error"]
+    g = list(fake.prompts.values())[-1]
+    i2v = next(n for n in g.values() if n["class_type"] == "WanImageToVideo")["inputs"]
+    assert i2v["length"] == 49 and (i2v["width"], i2v["height"]) == (d["width"], d["height"])
+    ks = [n["inputs"] for n in g.values() if n["class_type"] == "KSamplerAdvanced"]
+    assert [(k["start_at_step"], k["end_at_step"]) for k in ks] == [(0, 2), (2, 10000)]
+    loras = sorted(n["inputs"]["lora_name"] for n in g.values() if n["class_type"] == "LoraLoaderModelOnly")
+    assert loras[0].startswith("wan2.2_i2v_lightx2v")
+    text = next(n["inputs"]["text"] for n in g.values() if n["class_type"] == "CLIPTextEncode")
+    assert "머리카락" not in text                                    # Wan reads English: translated
+    rec = client.get(f"/api/images/{v['result_ids'][0]}").json()
+    assert rec["media"] == "video" and rec["label"] == "영상 3초" and rec["parent_id"] == img and rec["file"].endswith(".mp4")
+    f = client.get(f"/api/images/{rec['id']}/file")
+    assert f.headers["content-type"] == "video/mp4" and b"ftyp" in f.content
+    assert client.get(f"/api/images/{rec['id']}/thumb").status_code == 200
+    # a clip cannot be edited or turned into another clip
+    assert client.post(f"/api/images/{rec['id']}/upscale", json={}).status_code == 400
+    assert client.post(f"/api/images/{rec['id']}/video", json={}).status_code == 400
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert client.get(f"/api/images/{r['result_ids'][0]}").json()["media"] == "video"

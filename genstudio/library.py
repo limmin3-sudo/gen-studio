@@ -71,6 +71,25 @@ class Library:
             self._items[iid] = rec
         return rec
 
+    def add_video(self, video: bytes, poster_png: bytes, meta: dict, ext: str = ".mp4") -> dict:
+        """A generated clip: the file plus a poster frame for the gallery thumbnail."""
+        iid = meta.get("id") or new_id()
+        day = datetime.now().strftime("%Y-%m-%d")
+        folder = self.root / day
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{iid}{ext}").write_bytes(video)
+        with Image.open(io.BytesIO(poster_png)) as im:
+            w, h = im.size
+            self._thumb(im, iid)
+        parent = self._items.get(meta.get("parent_id") or "")
+        rec = {"id": iid, "file": f"{day}/{iid}{ext}", "created_at": time.time(), "width": w, "height": h,
+               "media": "video", "root_id": parent["root_id"] if parent else iid,
+               **{k: v for k, v in meta.items() if k != "id"}}
+        (folder / f"{iid}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._lock:
+            self._items[iid] = rec
+        return rec
+
     def import_image(self, data: bytes, filename: str = "image.png") -> dict:
         """Bring an outside image in: fix orientation, keep size workable, remember any AI metadata."""
         with Image.open(io.BytesIO(data)) as im:

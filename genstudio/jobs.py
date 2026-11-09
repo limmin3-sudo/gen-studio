@@ -126,6 +126,23 @@ class EditRequest(BaseModel):
     translate: bool | None = None
 
 
+class VideoRequest(BaseModel):
+    image_id: str
+    prompt: str = Field("", description="어떻게 움직일지 (비우면 자연스러운 움직임)")
+    seconds: Literal[3, 5] = 5
+    quality: Literal["480p", "720p"] = "480p"
+    seed: int = -1
+
+
+VIDEO_AREA = {"480p": 832 * 480, "720p": 1280 * 720}
+VIDEO_FPS = 16
+
+
+def video_size(w: int, h: int, quality: str) -> tuple[int, int]:
+    k = (VIDEO_AREA[quality] / (w * h)) ** 0.5
+    return max(256, round(w * k / 16) * 16), max(256, round(h * k / 16) * 16)
+
+
 class UpscaleRequest(BaseModel):
     image_id: str
     scale: Literal[2, 4] = 2
@@ -407,6 +424,8 @@ class Engine:
         missing = [i for i in ids if not self.library.get(i)]
         if missing:
             raise KeyError(f"참고 이미지를 찾을 수 없어요: {', '.join(missing)}")
+        for i in ids:
+            self._need_still(i)
         return ids, char
 
     def resolve_loras(self, wanted: list[dict]) -> tuple[list[dict], str | None]:
@@ -489,6 +508,7 @@ class Engine:
         rec = self.library.get(req.pose)
         if not rec:
             raise KeyError(f"포즈 이미지를 찾을 수 없어요: {req.pose}")
+        self._need_still(req.pose)
         is_map = rec.get("kind") == "pose"
         if not is_map and not self.registry.tool_ready("pose_detect", self.settings.models_dir):
             raise ValueError("포즈 인식 모델(SDPose)이 없어요. update.bat을 실행해 받아 주세요.")
@@ -540,6 +560,7 @@ class Engine:
         return self._enqueue(job)
 
     def submit_edit(self, req: EditRequest) -> Job:
+        self._need_still(req.image_id)
         src = self.library.get(req.image_id)
         if not src:
             raise KeyError("편집할 이미지를 찾을 수 없어요")
@@ -630,6 +651,7 @@ class Engine:
         return None
 
     def submit_segment(self, req: SegmentRequest) -> Job:
+        self._need_still(req.image_id)
         if not self.library.get(req.image_id):
             raise KeyError("이미지를 찾을 수 없어요")
         if not self.registry.tool_ready("sam3", self.settings.models_dir):
@@ -645,6 +667,7 @@ class Engine:
         return self._enqueue(job)
 
     def submit_character_build(self, req: CharacterBuildRequest) -> Job:
+        self._need_still(req.image_id)
         if not self.library.get(req.image_id):
             raise KeyError("이미지를 찾을 수 없어요")
         existing = self.characters.get(req.name)
@@ -698,8 +721,72 @@ class Engine:
         char = self.characters.save(req.name, [src["id"], *job.result_ids], description, aliases=req.aliases)
         job.result = {"character": char}
 
+    # ------------------------------------------------------------ image -> video
+    def _need_still(self, iid: str) -> None:
+        rec = self.library.get(iid)
+        if rec and rec.get("media") == "video":
+            raise ValueError("영상은 편집할 수 없어요. 영상을 만든 원본 이미지에서 작업해 주세요.")
+
+    def submit_video(self, req: VideoRequest) -> Job:
+        src = self.library.get(req.image_id)
+        if not src:
+            raise KeyError("이미지를 찾을 수 없어요")
+        if src.get("media") == "video":
+            raise ValueError("영상에서 다시 영상을 만들 수는 없어요. 원본 이미지를 고르세요.")
+        if not self.registry.tool_ready("video_i2v", self.settings.models_dir):
+            raise ValueError("영상 모델(Wan 2.2 I2V)이 없어요. update.bat을 실행해 받아 주세요 (약 31GB).")
+        w, h = video_size(src["width"], src["height"], req.quality)
+        frames = req.seconds * VIDEO_FPS + 1
+        job = Job(id=uuid.uuid4().hex[:12], kind="video", request=req.model_dump(),
+                  decision={"action": f"영상 {req.seconds}초", "model_name": "Wan 2.2 I2V 14B", "family": "wan22_i2v",
+                            "width": w, "height": h, "frames": frames, "fps": VIDEO_FPS})
+        return self._enqueue(job)
+
+    async def _run_video(self, job: Job) -> None:
+        req = VideoRequest(**job.request)
+        src = self.library.get(req.image_id)
+        path = self.library.path(req.image_id)
+        if not src or not path:
+            raise ComfyError("이미지가 사라졌어요")
+        d = job.decision
+        motion = req.prompt.strip()
+        base = src.get("prompt_en") or src.get("prompt") or ""
+        text = motion or "natural, subtle movement, the camera holds steady"
+        text = await self._maybe_translate(job, text, "wan22", None)
+        if base and not motion:
+            base = await self._maybe_translate(job, base, "wan22", None)
+            text = f"{base}. {text}"
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            s = max(d["width"] / im.width, d["height"] / im.height)
+            im = im.resize((round(im.width * s), round(im.height * s)), Image.LANCZOS)
+            x, y = (im.width - d["width"]) // 2, (im.height - d["height"]) // 2
+            im = im.crop((x, y, x + d["width"], y + d["height"]))
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            poster = buf.getvalue()
+        name = await self.comfy.upload_image(poster, f"video-start-{src['id']}.png")
+        await self._switch_family("wan22_i2v")
+        job.message = "영상 만드는 중 (몇 분 걸려요)"
+        seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
+        files = [f.name for f in self.registry.tools["video_i2v"]]
+        graph = workflows.image_to_video(name, files, text, "", d["width"], d["height"], d["frames"], seed, VIDEO_FPS)
+        outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=3 * 3600)
+        item = next((o for o in outs if str(o.get("filename", "")).lower().endswith((".mp4", ".webm", ".mov"))), outs[0])
+        data = await self.comfy.view(item["filename"], item.get("subfolder", ""))
+        ext = "." + item["filename"].rsplit(".", 1)[-1].lower()
+        rec = self.library.add_video(data, poster, {
+            "kind": "video", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
+            "edit_prompt": req.prompt, "final_prompt": text, "model_id": None, "family": "wan22_i2v", "seed": seed,
+            "label": f"영상 {req.seconds}초", "fps": VIDEO_FPS, "frames": d["frames"],
+            "duration": round(d["frames"] / VIDEO_FPS, 2),
+            "edit": {"mode": "video", "seconds": req.seconds, "quality": req.quality},
+        }, ext=ext)
+        job.result_ids.append(rec["id"])
+
     # ------------------------------------------------------------ upscale
     def submit_upscale(self, req: UpscaleRequest) -> Job:
+        self._need_still(req.image_id)
         src = self.library.get(req.image_id)
         if not src:
             raise KeyError("이미지를 찾을 수 없어요")
@@ -765,6 +852,7 @@ class Engine:
         return m
 
     def submit_detail(self, req) -> Job:
+        self._need_still(req.image_id)
         from . import detail as D
         src = self.library.get(req.image_id)
         if not src:
@@ -926,6 +1014,7 @@ class Engine:
         job.result = {"lora": item, "captions": captions}
 
     def submit_cutout(self, req: CutoutRequest) -> Job:
+        self._need_still(req.image_id)
         if not self.library.get(req.image_id):
             raise KeyError("이미지를 찾을 수 없어요")
         parse_bg(req.background)
@@ -1032,6 +1121,8 @@ class Engine:
                     await self._run_detail(job)
                 elif job.kind == "upscale":
                     await self._run_upscale(job)
+                elif job.kind == "video":
+                    await self._run_video(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -1412,6 +1503,10 @@ class Engine:
                             if not rec.get("character") or r not in (self.characters.get(rec["character"]) or {}).get("ref_ids", [])],
                 character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise"),
                 regions=rec.get("regions") or [], pose=rec.get("pose_id"), pose_strength=rec.get("pose_strength") or 0.85))
+        if rec.get("kind") == "video" and rec.get("parent_id"):
+            e = rec.get("edit") or {}
+            return self.submit_video(VideoRequest(image_id=rec["parent_id"], prompt=rec.get("edit_prompt") or "",
+                                                  seconds=e.get("seconds") or 5, quality=e.get("quality") or "480p"))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
             if edit.get("mode") == "character_sheet":

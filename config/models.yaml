@@ -230,3 +230,35 @@ tools:
       url: https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors
       size: 2502139104
       sha256: b8524e557a7df60d081f5d4a0eb109967d107df217943bf88c2d99b9ebcc06c5
+  # 이미지 → 영상: Wan 2.2 I2V 14B (fp8) + 4스텝 LightX2V (ComfyUI 공식 템플릿). 순서: high, low, lora high, lora low, 텍스트, VAE
+  video_i2v:
+    - name: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+      dir: diffusion_models
+      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+      size: 14294742832
+      sha256: 6122e79d55e0f235698d11d657f3b196c5273c830da00b2b013c5a048d5e6a42
+    - name: wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+      dir: diffusion_models
+      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+      size: 14294742832
+      sha256: 5471a457b6ac404202a5fbe6c11595a3d5641fc766b00f38763f72303fffc21e
+    - name: wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+      dir: loras
+      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+      size: 1226977424
+      sha256: d176c808d6fc461999b68e321efcb7501b20b8c3797523ed0df14f7d1deff11e
+    - name: wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+      dir: loras
+      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+      size: 1226977424
+      sha256: 024f21de095bc8fad9809ded3e9e49a2e170dcf27075da8145ba7d60d8aab7f9
+    - name: umt5_xxl_fp8_e4m3fn_scaled.safetensors
+      dir: text_encoders
+      url: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+      size: 6735906897
+      sha256: c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68
+    - name: wan_2.1_vae.safetensors
+      dir: vae
+      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
+      size: 253815318
+      sha256: 2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b

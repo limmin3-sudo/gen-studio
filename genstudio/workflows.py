@@ -362,6 +362,43 @@ def upscale(image_name: str, upscaler: str, scale: int = 2, refine_model: ModelS
     return g.nodes, {"final_prompt": text}
 
 
+WAN_NEGATIVE = ("色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，"
+                "残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，"
+                "背景人很多，倒着走")
+
+
+def image_to_video(image_name: str, files: list[str], prompt: str, negative: str, width: int, height: int,
+                   frames: int, seed: int, fps: int = 16, prefix: str = "gen-studio/video") -> dict:
+    """Wan 2.2 I2V 14B with the 4-step LightX2V LoRAs: ComfyUI's official "Image to Video (Wan 2.2)" template.
+    files: high, low, lora high, lora low, text encoder, vae."""
+    high, low, l_high, l_low, te, vae = files
+    g = Graph()
+    clip = out(g.add("CLIPLoader", clip_name=te, type="wan", device="default"))
+    v = out(g.add("VAELoader", vae_name=vae))
+
+    def expert(unet, lora):
+        m = out(g.add("UNETLoader", unet_name=unet, weight_dtype="default"))
+        m = out(g.add("LoraLoaderModelOnly", model=m, lora_name=lora, strength_model=1.0))
+        return out(g.add("ModelSamplingSD3", model=m, shift=5.0))
+
+    mh, ml = expert(high, l_high), expert(low, l_low)
+    pos = out(g.add("CLIPTextEncode", text=prompt, clip=clip))
+    neg = out(g.add("CLIPTextEncode", text=negative or WAN_NEGATIVE, clip=clip))
+    start = out(g.add("LoadImage", image=image_name))
+    i2v = g.add("WanImageToVideo", positive=pos, negative=neg, vae=v, width=int(width), height=int(height),
+                length=int(frames), batch_size=1, start_image=start)
+    a = g.add("KSamplerAdvanced", model=mh, add_noise="enable", noise_seed=int(seed), steps=4, cfg=1.0,
+              sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
+              latent_image=out(i2v, 2), start_at_step=0, end_at_step=2, return_with_leftover_noise="enable")
+    b = g.add("KSamplerAdvanced", model=ml, add_noise="disable", noise_seed=int(seed), steps=4, cfg=1.0,
+              sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
+              latent_image=out(a), start_at_step=2, end_at_step=10000, return_with_leftover_noise="disable")
+    frames_img = out(g.add("VAEDecode", samples=out(b), vae=v))
+    video = out(g.add("CreateVideo", images=frames_img, fps=float(fps)))
+    g.add("SaveVideo", video=video, filename_prefix=prefix, **{"format": "mp4", "format.codec": "auto"})
+    return g.nodes
+
+
 def remove_background(image_name: str, model_file: str, prefix: str = "gen-studio/cutout") -> dict:
     """BiRefNet foreground mask (white = keep). The cut-out itself is composed in Python to keep full quality."""
     g = Graph()
