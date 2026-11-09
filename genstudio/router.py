@@ -10,6 +10,12 @@ from pathlib import Path
 
 from .registry import ModelSpec, Registry
 
+TEXT_WORDS = ["글자", "글씨", "텍스트", "문구", "간판", "포스터", "로고", "타이포", "현수막", "배너", "메뉴판", "책 표지",
+              "앨범 커버", "인포그래픽", "카드뉴스", "썸네일 문구", "명함", "전단", "광고 문구", "자막",
+              "typography", "poster", "logo", "signboard", "neon sign", "banner", "infographic", "lettering",
+              "book cover", "album cover", "with the text", "that says", "reads \"", "written"]
+_QUOTED = re.compile(r'["“”「」『』][^"“”「」『』]{2,40}["“”「」『』]')
+
 STYLE_WORDS = {
     "semi": ["반실사", "반 실사", "2.5d", "2.5 d", "semi-real", "semi real", "semireal", "일러스트풍", "일러스트 풍",
              "illustration", "illustrated", "그림체", "웹툰", "게임 cg", "game cg", "렌더", "3d render"],
@@ -31,7 +37,7 @@ SIZES = {
     "wide": (1344, 768),
 }
 
-STYLE_LABEL = {"realistic": "실사", "semi": "반실사"}
+STYLE_LABEL = {"realistic": "실사", "semi": "반실사", "text": "글자·디자인"}
 ASPECT_LABEL = {"square": "정사각", "portrait": "세로", "landscape": "가로", "tall": "세로(9:16)", "wide": "가로(16:9)"}
 
 
@@ -69,6 +75,13 @@ def _find(text: str, table: dict[str, list[str]]) -> tuple[str | None, str | Non
 
 
 def detect_style(text: str) -> tuple[str | None, str | None]:
+    # Lettering needs the model that can spell; check it first.
+    t, w0 = _find(text, {"text": TEXT_WORDS})
+    if t:
+        return "text", w0
+    m = _QUOTED.search(text)
+    if m:
+        return "text", m.group(0)
     # "반실사" contains "실사", so check semi words first and let the longer match win.
     semi, w1 = _find(text, {"semi": STYLE_WORDS["semi"]})
     if semi:

@@ -115,10 +115,10 @@ const Gen = (() => {
   }
   async function preview() {
     const b = body();
-    if (!b.prompt) { routeEl.innerHTML = `<span class="hint">한국어로 써도 됩니다. "실사", "반실사", "세로" 같은 말을 넣으면 그에 맞춰 고릅니다.</span>`; return; }
+    if (!b.prompt) { routeEl.innerHTML = `<span class="hint">한국어로 써도 됩니다. "실사", "반실사", "포스터", "세로" 같은 말을 넣으면 그에 맞춰 고릅니다. 이미지에 넣을 글자는 "따옴표"로 감싸세요.</span>`; return; }
     try {
       const d = await api.post('/api/route', b);
-      routeEl.innerHTML = `<span class="pill auto">자동 선택 → <b>${esc(d.model_name)}</b> · ${d.style === 'semi' ? '반실사' : '실사'} · ${d.width}×${d.height}${d.reasons.length ? ` <span class="hint">(${esc(d.reasons.join(', '))})</span>` : ''}</span>`;
+      routeEl.innerHTML = `<span class="pill auto">자동 선택 → <b>${esc(d.model_name)}</b> · ${({semi: '반실사', text: '글자·디자인'})[d.style] || '실사'} · ${d.width}×${d.height}${d.reasons.length ? ` <span class="hint">(${esc(d.reasons.join(', '))})</span>` : ''}</span>`;
     } catch (e) { routeEl.innerHTML = `<span class="hint">${esc(e.message)}</span>`; }
   }
   form.addEventListener('submit', async e => {

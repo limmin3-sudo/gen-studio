@@ -75,3 +75,28 @@ def test_full_checkpoint_detection(tmp_path):
     _write_safetensors(unet, ["model.diffusion_model.x", "layers.0.attn"])
     assert is_full_checkpoint(full) is True
     assert is_full_checkpoint(unet) is False
+
+
+QWEN = REG.get("qwen-image-21-turbo")
+
+
+def test_qwen21_turbo_matches_comfy_template():
+    g, _ = workflows.txt2img(QWEN, 'poster that says "HELLO"', "", 1024, 1536, 5)
+    assert_links_valid(g)
+    assert node(g, "CLIPLoader")["type"] == "qwen_image"
+    enc = node(g, "TextEncodeQwenImage21")
+    assert enc["prompt"] == 'poster that says "HELLO"' and enc["resolution"] == 1024 and "vae" in enc
+    assert node(g, "ManualSigmas")["sigmas"].startswith("1.0, 0.978453")
+    assert node(g, "CFGGuider")["cfg"] == 1.0
+    assert node(g, "KSamplerSelect")["sampler_name"] == "euler"
+    assert node(g, "EmptyLatentImage")["height"] == 1536
+    assert "KSampler" not in classes(g) and "QwenImage21Cache" in classes(g)
+
+
+def test_qwen21_partial_denoise_trims_schedule():
+    g, _ = workflows.img2img(QWEN, "gen-studio/a.png", "", "", 1, 0.5)
+    assert_links_valid(g)
+    assert node(g, "ManualSigmas")["sigmas"] == "0.5, 0.414568, 0"
+    g, _ = workflows.inpaint(QWEN, "gen-studio/a.png", "gen-studio/m.png", "x", "", 1)
+    assert_links_valid(g)
+    assert node(g, "ManualSigmas")["sigmas"].startswith("1.0")

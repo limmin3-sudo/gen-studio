@@ -19,7 +19,8 @@ if TYPE_CHECKING:
     from .app import State
 
 INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid APIs).
-- generate_image: text to image. Style is picked automatically (realistic photo vs semi-realistic) unless given.
+- generate_image: text to image. Style is picked automatically (realistic photo, semi-realistic, or text/design
+  for posters, signs and lettering) unless given.
 - edit_image: change an existing image. With a mask (white = area to change) only that area is redrawn;
   without a mask the whole image is lightly redrawn. fill='auto' lets the model decide what goes in the area.
 - Long jobs return a job_id; poll get_job_status, then get_image.
@@ -71,7 +72,7 @@ def build_mcp(state: "State") -> MCPServer:
     @mcp.tool(description="Generate images from a text prompt on the local GPU. Returns previews and image_ids.")
     async def generate_image(
         prompt: str,
-        style: Literal["auto", "realistic", "semi"] = "auto",
+        style: Literal["auto", "realistic", "semi", "text"] = "auto",
         aspect: Literal["auto", "square", "portrait", "landscape", "tall", "wide"] = "auto",
         model: str = "auto",
         negative: str = "",

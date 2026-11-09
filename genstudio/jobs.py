@@ -26,7 +26,7 @@ CLEAR_PROMPT = "empty background, nothing there, seamless continuation of the su
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="그리고 싶은 내용")
     negative: str = ""
-    style: Literal["auto", "realistic", "semi"] = "auto"
+    style: Literal["auto", "realistic", "semi", "text"] = "auto"
     model: str = "auto"
     aspect: Literal["auto", "square", "portrait", "landscape", "tall", "wide"] = "auto"
     width: int | None = Field(None, ge=256, le=2048)

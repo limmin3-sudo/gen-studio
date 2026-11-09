@@ -41,7 +41,9 @@ class Family:
     id: str
     name: str
     loader: str = "checkpoint"          # checkpoint | unet
-    latent: str = "sdxl"                # sdxl | sd3
+    latent: str = "sdxl"                # sdxl | sd3 | generic
+    encoder: str = "clip"               # clip | qwen21 (TextEncodeQwenImage21)
+    sigmas: str | None = None           # fixed step schedule for distilled models
     clip: str | None = None
     clip_type: str | None = None
     vae: str | None = None
@@ -62,7 +64,7 @@ class ModelSpec:
     id: str
     name: str
     family: Family
-    style: str                          # realistic | semi
+    style: str                          # realistic | semi | text
     role: str                           # main | alt
     file: FileSpec
     prompt_prefix: str | None = None

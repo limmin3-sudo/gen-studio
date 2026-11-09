@@ -55,3 +55,11 @@ def test_edit_uses_source_model():
     assert m.id == "semireal-mm"
     m, why = router.model_for_edit(REG, None, None)
     assert m.style == "realistic"
+
+
+def test_text_and_poster_requests_go_to_qwen():
+    for p in ["카페 간판에 '봄날' 글자", '네온사인으로 "OPEN" 이라고 쓴 사진', "movie poster for a space opera", "회사 로고 디자인"]:
+        d = pick(p)
+        assert d.style == "text" and d.model.id == "qwen-image-21-turbo", p
+    # plain portrait requests are unaffected
+    assert pick("창가에 앉은 여자 실사").model.id == "cyberrealistic-zit"
