@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__, router
-from .comfy import ComfyClient
+from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
 from .jobs import CharacterBuildRequest, CutoutRequest, UpscaleRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
@@ -127,6 +127,15 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
             return engine.plan(req)
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
+
+    @app.post("/api/enhance")
+    async def enhance(req: GenerateRequest):
+        try:
+            return await engine.enhance_prompt(req)
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+        except ComfyError as e:
+            raise HTTPException(502, str(e))
 
     @app.post("/api/generate")
     async def generate(req: GenerateRequest):

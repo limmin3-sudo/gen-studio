@@ -1123,6 +1123,22 @@ class Engine:
         job.result["caption"] = text
         return name, text
 
+    async def enhance_prompt(self, req: GenerateRequest) -> dict:
+        """Short request -> detailed prompt in the form the chosen model reads best (shown to the user to edit)."""
+        from . import translate as tr
+        d = self.plan(req)
+        vlm = self.vlm_file()
+        if not vlm:
+            raise ValueError("프롬프트 다듬기에는 Qwen3-VL(Qwen-Image 2.1과 함께 받는 파일)이 필요해요")
+        prompt, neg = router.split_negative(req.prompt)
+        outputs = await self.comfy.run_outputs(workflows.rewrite_text(vlm, tr.enhance_instruction(prompt, d["family"]),
+                                                                       max_length=350), timeout=180)
+        text = tr.clean(output_text(outputs), prompt)
+        if neg:
+            text += f" --no {neg}"
+        return {"prompt": text, "model_name": d["model_name"], "model_id": d["model_id"], "family": d["family"],
+                "style": d["style"], "aspect": d.get("aspect")}
+
     async def _maybe_translate(self, job: Job, text: str, family: str, flag: bool | None) -> str:
         """Korean request -> English prompt for models that need it (uses the Qwen3-VL already downloaded)."""
         from . import translate as tr

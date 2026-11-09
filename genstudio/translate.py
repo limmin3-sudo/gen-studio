@@ -41,3 +41,22 @@ def clean(reply: str, original: str) -> str:
     t = re.sub(r"^(prompt|tags|answer)\s*:\s*", "", t, flags=re.I).strip().strip('"').strip()
     t = t.split("\n\n")[0].strip()
     return t if len(t) >= 3 else original
+
+
+ENHANCE_TAGS = """Expand the image request below into a prompt for an Illustrious (SDXL semi-realistic) model:
+comma-separated English Danbooru-style tags, 20-35 tags, most important first: subject count (1girl ...), look,
+hair, clothing, pose, expression, place, lighting, camera angle and framing. Keep everything the user asked for and
+change nothing they specified; only add details that fit. Keep any text inside quotes exactly. Reply with the tags only.
+
+Request: """
+
+ENHANCE_SENTENCE = """Expand the image request below into a detailed English prompt for a photorealistic image model:
+three or four natural sentences covering the subject (age range, look), clothing, pose, expression, setting,
+lighting, camera and lens, and mood. Keep everything the user asked for and change nothing they specified; only add
+details that fit. Keep any text inside quotes exactly. Reply with the prompt only.
+
+Request: """
+
+
+def enhance_instruction(text: str, family: str) -> str:
+    return (ENHANCE_TAGS if family == "illustrious" else ENHANCE_SENTENCE) + text.strip()

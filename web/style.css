@@ -133,6 +133,10 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .prompt textarea{flex:1;min-width:0;min-height:44px;max-height:160px;resize:none;border:0;background:transparent;font:inherit;font-size:15.5px;line-height:1.45;color:var(--fg);padding:11px 0}
 .prompt textarea::placeholder{color:var(--muted)}
 .prompt textarea:focus{outline:none}
+.enh{width:40px;height:44px;border-radius:50%;display:grid;place-items:center;color:var(--muted);flex:none;background:transparent}
+.enh:hover{color:var(--accent);background:var(--accent-soft)}
+.enh.busy{color:var(--accent);animation:enhpulse 1s ease-in-out infinite}
+@keyframes enhpulse{50%{opacity:.35}}
 .send{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;flex:none}
 .opts-row{display:flex;flex-wrap:wrap;gap:6px;padding-inline:8px}
 .sel-pill{position:relative;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:15px;background:var(--chip);font-size:13px}

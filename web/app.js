@@ -190,6 +190,26 @@ const Gen = (() => {
             model: sels.model.value, character: charSel.value || null, references: refs,
             loras: picked.map(p => ({name: p.id, strength: p.strength}))};
   }
+  $('#genEnhance').onclick = async () => {
+    const b = body(), btn = $('#genEnhance');
+    if (!b.prompt) { prompt.focus(); toast('먼저 대충이라도 적어 주세요'); return; }
+    if (btn.classList.contains('busy')) return;
+    btn.classList.add('busy');
+    try {
+      const r = await api.post('/api/enhance', b);
+      prompt.focus(); prompt.select();
+      // insertText keeps the browser's undo history, so Ctrl+Z brings the short version back
+      if (!document.execCommand('insertText', false, r.prompt)) prompt.value = r.prompt;
+      // the rewrite drops words like "반실사"; keep the style/model that was picked for the short version
+      if (sels.style.value === 'auto' && r.style && [...sels.style.options].some(o => o.value === r.style)) { sels.style.value = r.style; store.set('gen.style', r.style); }
+      if (sels.aspect.value === 'auto' && r.aspect && r.aspect !== 'square' && [...sels.aspect.options].some(o => o.value === r.aspect)) { sels.aspect.value = r.aspect; store.set('gen.aspect', r.aspect); }
+      if (sels.model.value === 'auto' && r.family === 'wan22') { sels.model.value = r.model_id; store.set('gen.model', r.model_id); }
+      syncLabels();
+      autoGrow(prompt); store.set('lastPrompt', prompt.value); preview();
+      toast(`${r.model_name}에 맞게 다듬었어요. 마음에 안 들면 Ctrl+Z`, 4000);
+    } catch (e) { toast(e.message, 5000); }
+    finally { btn.classList.remove('busy'); }
+  };
   async function preview() {
     const b = body();
     if (b.character || b.references.length) {

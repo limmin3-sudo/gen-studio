@@ -320,3 +320,13 @@ def test_upscale_2x_and_4x(client, fake):
     # 2x of the 2K result: keeps its size first and skips the redraw
     again = client.post(f"/api/images/{rec['id']}/upscale", json={"scale": 2}).json()["decision"]
     assert again["model_id"] is None and again["width"] == rec["width"] * 2
+
+
+def test_enhance_prompt(client, fake):
+    r = client.post("/api/enhance", json={"prompt": "반실사 카페 여자 --no hat"}).json()
+    assert r["family"] == "illustrious" and r["prompt"].startswith("1girl") and r["prompt"].endswith("--no hat")
+    g = list(fake.prompts.values())[-1]
+    gen = next(n for n in g.values() if n["class_type"] == "TextGenerateV2")["inputs"]
+    assert "Danbooru" in gen["prompt"] and "반실사 카페 여자" in gen["prompt"] and "--no" not in gen["prompt"]
+    r = client.post("/api/enhance", json={"prompt": "카페 여자"}).json()
+    assert r["family"] == "zimage" and r["prompt"] == "A woman sitting by a window in soft natural light."
