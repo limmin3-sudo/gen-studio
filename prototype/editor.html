@@ -1,0 +1,570 @@
+<title>Gen Studio 편집기</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout: two-pane editor — stage (version rail · checkerboard canvas · prompt bar) on the left, tool sidebar on the right */
+:root{
+  --bg:#f6f5f2; --panel:#fbfaf8; --surface:#ffffff; --chip:#ebe9e5; --chip-hover:#e1ded9;
+  --fg:#1b1a19; --muted:#706c66; --line:#e2dfda; --accent:#4d78f5; --accent-soft:rgba(77,120,245,.14);
+  --check-a:#ffffff; --check-b:#e8e6e2; --ink:#121212; --ink-fg:#ffffff; --shadow:0 1px 2px rgba(20,18,15,.06),0 6px 20px rgba(20,18,15,.06);
+  --ui:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#151515; --panel:#1b1b1a; --surface:#232322; --chip:#2a2a29; --chip-hover:#343432;
+  --fg:#ecebe7; --muted:#9b978f; --line:#2f2f2d; --accent:#7f9dff; --accent-soft:rgba(127,157,255,.18);
+  --check-a:#2a2a29; --check-b:#222221; --ink:#f1f0ec; --ink-fg:#121212; --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#151515; --panel:#1b1b1a; --surface:#232322; --chip:#2a2a29; --chip-hover:#343432;
+  --fg:#ecebe7; --muted:#9b978f; --line:#2f2f2d; --accent:#7f9dff; --accent-soft:rgba(127,157,255,.18);
+  --check-a:#2a2a29; --check-b:#222221; --ink:#f1f0ec; --ink-fg:#121212; --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25); color-scheme:dark}
+
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--ui);overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+.app{display:grid;grid-template-columns:minmax(0,1fr) 420px;grid-template-rows:minmax(0,1fr);height:100%;
+  padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+.app.no-panel{grid-template-columns:minmax(0,1fr) 0}
+.app.no-panel .side{display:none}
+
+/* ---------- stage ---------- */
+.stage{position:relative;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:16px}
+.topbar{display:flex;align-items:center;gap:10px;padding-block:12px 6px}
+.round{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:var(--chip)}
+.round:hover{background:var(--chip-hover)}
+.meta{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.meta b{font-weight:600;font-size:14px}
+.meta span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spacer{flex:1}
+.zoom{display:flex;align-items:center;gap:2px;height:44px;padding:0 6px;border-radius:22px;background:var(--chip);font-variant-numeric:tabular-nums}
+.zoom button{width:34px;height:34px;border-radius:50%;display:grid;place-items:center}
+.zoom button:hover{background:var(--chip-hover)}
+.zoom output{min-width:52px;text-align:center;font-size:15px;font-weight:500}
+
+.canvas-area{position:relative;overflow:auto;display:flex;min-height:0;padding:8px 8px 8px 84px}
+.frame{margin:auto;position:relative;flex:none}
+.frame.outpaint{background:repeating-linear-gradient(45deg,transparent 0 10px,var(--accent-soft) 10px 20px);outline:1.5px dashed var(--accent);outline-offset:-1px}
+.frame .tag{position:absolute;left:8px;top:8px;font-size:12px;padding:3px 8px;border-radius:6px;background:var(--surface);color:var(--muted);box-shadow:var(--shadow)}
+.imgbox{position:absolute;inset:0;margin:auto;background:repeating-conic-gradient(var(--check-b) 0 25%,var(--check-a) 0 50%) 0 0/22px 22px}
+.imgbox svg.scene{display:block;width:100%;height:100%}
+.imgbox canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.app.tool-brush .imgbox canvas{pointer-events:auto;cursor:crosshair}
+.seg{cursor:pointer;transition:opacity .18s}
+.scene.has-sel .seg:not(.on){opacity:.28}
+.seg.on{filter:url(#m-outline)}
+.seg.hl{filter:url(#m-hover)}
+.busy{position:absolute;inset:0;display:grid;place-items:center;background:color-mix(in srgb,var(--bg) 55%,transparent);backdrop-filter:blur(3px)}
+.busy div{display:grid;gap:10px;justify-items:center;padding:16px 20px;border-radius:14px;background:var(--surface);box-shadow:var(--shadow);font-size:14px}
+.busy i{display:block;width:180px;height:4px;border-radius:2px;background:var(--chip);overflow:hidden}
+.busy i::after{content:"";display:block;height:100%;width:var(--p,0%);background:var(--accent);transition:width .1s linear}
+
+.rail{position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:10px;max-height:100%;overflow:auto;padding:4px}
+.rail button{width:64px;aspect-ratio:2/3;border-radius:8px;overflow:hidden;outline:2px solid transparent;outline-offset:1px;background:repeating-conic-gradient(var(--check-b) 0 25%,var(--check-a) 0 50%) 0 0/10px 10px;box-shadow:var(--shadow)}
+.rail button.cur{outline-color:var(--accent)}
+.rail button svg{width:100%;height:100%;display:block}
+
+.promptwrap{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding-block:8px 16px;max-width:940px;width:100%;margin:0 auto}
+.route{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:28px;padding-inline:8px}
+.pill{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;font-size:13px;background:var(--chip);white-space:nowrap}
+.pill.sel{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.pill.sel button{display:grid;place-items:center;width:18px;height:18px;border-radius:50%}
+.pill.sel button:hover{background:var(--accent-soft)}
+.pill.auto{background:transparent;border:1px solid var(--line);color:var(--muted)}
+.pill.auto b{color:var(--fg);font-weight:500}
+.pill.sug{cursor:pointer}
+.pill.sug:hover{background:var(--chip-hover)}
+.hint{font-size:13px;color:var(--muted)}
+.prompt{display:flex;align-items:center;gap:8px;padding:8px 8px 8px 22px;border:1px solid var(--line);border-radius:30px;background:var(--surface);box-shadow:var(--shadow)}
+.prompt input{flex:1;min-width:0;height:44px;border:0;background:transparent;font:inherit;font-size:16px;color:var(--fg)}
+.prompt input::placeholder{color:var(--muted)}
+.prompt input:focus{outline:none}
+.send{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;flex:none}
+.send:disabled{opacity:.4;cursor:default}
+
+/* ---------- sidebar ---------- */
+.side{background:var(--panel);border-left:1px solid var(--line);display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;padding-right:max(16px,env(safe-area-inset-right,0px))}
+.tools{display:flex;justify-content:center;gap:8px;padding:12px 0 10px 16px}
+.tools button{width:44px;height:44px;border-radius:50%;display:grid;place-items:center}
+.tools button:hover{background:var(--chip)}
+.tools button[aria-pressed="true"]{background:var(--chip-hover)}
+.wheel{width:22px;height:22px;border-radius:50%;background:conic-gradient(#f05252,#f5a524,#f2e14b,#3ecf6e,#36b3f0,#6c63ff,#d94bd1,#f05252)}
+.pane{overflow:auto;padding:4px 0 8px 16px;min-height:0}
+.pane h2{display:flex;align-items:center;justify-content:space-between;font-size:15px;font-weight:500;color:var(--muted);margin:6px 0 10px}
+.ghost{display:inline-flex;align-items:center;gap:4px;height:30px;padding:0 12px;border-radius:15px;background:var(--chip);font-size:13px;color:var(--fg)}
+.ghost:hover{background:var(--chip-hover)}
+.ghost svg.i{width:15px;height:15px}
+.segs{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.segs ul{list-style:none;margin:4px 0 0;padding:0 0 0 50px;display:grid;gap:4px}
+.row{display:flex;align-items:center;gap:14px;width:100%;padding:6px 10px;border-radius:12px;text-align:left}
+.row:hover,.row.hl{background:var(--chip)}
+.row.on{background:var(--accent-soft)}
+.thumb{width:50px;height:50px;border-radius:9px;flex:none;background:var(--chip);overflow:hidden;display:grid;place-items:center}
+.thumb svg{width:44px;height:44px}
+.row .lbl{flex:1;min-width:0;display:grid}
+.row .lbl b{font-weight:500;font-size:15px}
+.row .lbl small{font-size:12px;color:var(--muted)}
+.row .chev{transition:transform .15s}
+.row[aria-expanded="false"] .chev{transform:rotate(180deg)}
+.note{font-size:13.5px;line-height:1.6;color:var(--muted);margin:0 0 12px}
+.badge{font-size:11px;padding:2px 7px;border-radius:9px;background:var(--chip);color:var(--muted);font-weight:500;vertical-align:2px;margin-left:6px}
+.swatches{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+.swatches button{aspect-ratio:1;border-radius:50%;border:1px solid var(--line)}
+.field{display:grid;gap:6px;margin-bottom:14px;font-size:14px}
+.field input[type=range]{width:100%;accent-color:var(--accent)}
+.seg2{display:flex;gap:6px;flex-wrap:wrap}
+.seg2 button{height:34px;padding:0 14px;border-radius:17px;background:var(--chip);font-size:14px}
+.seg2 button[aria-pressed="true"]{background:var(--ink);color:var(--ink-fg)}
+
+.actions{display:grid;gap:8px;padding:10px 0 10px 16px}
+.act{display:flex;align-items:center;gap:10px;height:46px;padding:0 16px;border-radius:12px;background:var(--chip);font-size:15px;position:relative}
+.act:hover{background:var(--chip-hover)}
+.act span{flex:1;text-align:center}
+.act select{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.act.primary{background:var(--ink);color:var(--ink-fg)}
+.act.primary:hover{opacity:.9}
+.act.soon{color:var(--muted)}
+.foot{display:flex;align-items:center;gap:4px;padding-top:4px}
+.foot button{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;color:var(--muted)}
+.foot button:hover{background:var(--chip);color:var(--fg)}
+.foot button[aria-pressed="true"]{color:#e0435c}
+.foot button[aria-pressed="true"] svg{fill:currentColor}
+
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);opacity:0;pointer-events:none;
+  background:var(--ink);color:var(--ink-fg);padding:10px 16px;border-radius:10px;font-size:14px;max-width:min(520px,calc(100vw - 32px));transition:.2s;z-index:20}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media (max-width:860px){
+  body{overflow:auto}
+  .app,.app.no-panel{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;height:auto;padding:0}
+  .stage{height:78svh;min-height:520px}
+  .canvas-area{padding-left:62px}
+  .rail button{width:46px}
+  .side{border-left:0;border-top:1px solid var(--line);padding-left:max(0px,env(safe-area-inset-left,0px))}
+  .app.no-panel .side{display:grid}
+  #panelBtn{display:none}
+  .zoom output{min-width:44px}
+  .zoom button{width:30px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="app" id="app">
+  <section class="stage">
+    <div class="topbar">
+      <button class="round" id="backBtn" aria-label="생성 화면으로"><svg class="i" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
+      <div class="meta"><b>편집기 미리보기</b><span id="srcInfo">데모 이미지 · 반실사 · Realism Illustrious</span></div>
+      <div class="zoom">
+        <button id="zOut" aria-label="축소"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+        <output id="zVal">100%</output>
+        <button id="zIn" aria-label="확대"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <button class="round" id="panelBtn" aria-label="오른쪽 패널 숨기기"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M15 4v16"/></svg></button>
+    </div>
+
+    <div class="canvas-area" id="area">
+      <div class="rail" id="rail" aria-label="버전 기록"></div>
+      <div class="frame" id="frame">
+        <div class="imgbox" id="imgbox">
+          <svg class="scene" id="scene" viewBox="0 0 400 600" aria-label="편집 중인 이미지"></svg>
+          <canvas id="brush"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="promptwrap">
+      <div class="route" id="route"></div>
+      <form class="prompt" id="form">
+        <input id="promptIn" autocomplete="off" placeholder="편집 내용을 설명하세요. 부분만 바꾸려면 세그먼트를 선택하세요">
+        <button class="send" id="sendBtn" aria-label="편집 실행" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+      </form>
+    </div>
+  </section>
+
+  <aside class="side" id="side">
+    <div class="tools" role="toolbar" aria-label="편집 도구">
+      <button data-tool="seg" aria-pressed="true" title="세그먼트"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="4" y="14" width="7" height="7" rx="2"/><circle cx="17.5" cy="16.5" r="3.5"/></svg></button>
+      <button data-tool="brush" aria-pressed="false" title="마스크 브러시"><svg class="i" viewBox="0 0 24 24"><path d="M14 4l6 6-8.5 8.5a3 3 0 0 1-4.2 0l-1.8-1.8a3 3 0 0 1 0-4.2z"/><path d="M4 20h7"/></svg></button>
+      <button data-tool="color" aria-pressed="false" title="색상"><span class="wheel"></span></button>
+      <button data-tool="crop" aria-pressed="false" title="자르기"><svg class="i" viewBox="0 0 24 24"><path d="M7 3v14h14M3 7h14v14"/></svg></button>
+      <button data-tool="draw" aria-pressed="false" title="그려서 지시"><svg class="i" viewBox="0 0 24 24"><path d="M16 4l4 4L9 19l-5 1 1-5z"/></svg></button>
+    </div>
+    <div class="pane" id="pane"></div>
+    <div class="actions">
+      <button class="act" id="regenBtn"><svg class="i" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg><span>재생성</span></button>
+      <button class="act soon" id="videoBtn"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="3"/><path d="M16 10l5-3v10l-5-3"/></svg><span>동영상 만들기 <span class="badge">4단계</span></span></button>
+      <label class="act"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/></svg><span id="arLabel">종횡비 · 원본</span><svg class="i" viewBox="0 0 24 24"><path d="M8 10l4-4 4 4M8 14l4 4 4-4"/></svg>
+        <select id="arSel" aria-label="종횡비">
+          <option value="orig">원본 (2:3)</option><option value="1:1">1:1</option><option value="3:4">3:4</option><option value="9:16">9:16</option><option value="16:9">16:9</option>
+        </select>
+      </label>
+      <button class="act primary" id="saveBtn"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg><span>PNG로 저장</span></button>
+      <div class="foot">
+        <button data-fb="up" title="잘 됐어요"><svg class="i" viewBox="0 0 24 24"><path d="M7 11v9H4v-9zM7 11l4-7a2 2 0 0 1 3 2l-1 4h6a2 2 0 0 1 2 2.3l-1.3 6A2 2 0 0 1 17.7 20H7"/></svg></button>
+        <button data-fb="down" title="별로예요"><svg class="i" viewBox="0 0 24 24"><path d="M17 13V4h3v9zM17 13l-4 7a2 2 0 0 1-3-2l1-4H5a2 2 0 0 1-2-2.3l1.3-6A2 2 0 0 1 6.3 4H17"/></svg></button>
+        <div class="spacer"></div>
+        <button id="favBtn" aria-pressed="false" title="즐겨찾기"><svg class="i" viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg></button>
+        <button data-msg="프롬프트와 설정을 복사했어요" title="설정 복사"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button>
+        <button data-msg="실제 앱에서는 outputs 폴더에 저장돼요" title="다운로드"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8.5 12.5 12 16l3.5-3.5"/></svg></button>
+        <button data-msg="더보기: 메타데이터 보기, 폴더에서 열기, 삭제" title="더보기"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
+      </div>
+    </div>
+  </aside>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const app = $('#app'), scene = $('#scene'), frame = $('#frame'), imgbox = $('#imgbox'), area = $('#area');
+const promptIn = $('#promptIn'), sendBtn = $('#sendBtn'), route = $('#route'), pane = $('#pane'), rail = $('#rail');
+const ICON_X = '<svg class="i" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+const ICON_CHEV = '<svg class="i chev" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>';
+const ICON_DL = '<svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>';
+
+/* ---------- demo scene: every shape belongs to a leaf segment ---------- */
+const DEF = {hair:'#d6b07d', face:'#f0d2bd', shirt:'#f5f3ef', ep1:'#1f2538', ep2:'#1f2538', sleeves:'#232327',
+  hands:'#eecdb6', belt:'#18181b', skirt:'#2b2b30', legs:'#eecdb6', shoes:'#19191c'};
+const mix = (c, p, w) => `color-mix(in srgb, ${c} ${p}%, ${w})`;
+const SHAPES = {
+  hairBack: c => `<path d="M160 95C158 45 185 30 205 32C238 34 250 62 246 100C244 125 236 140 226 146L224 120H176L174 146C164 138 160 118 160 95Z" fill="${c}"/>`,
+  legs: c => `<path d="M162 402H198L192 540H178Z" fill="${c}"/><path d="M202 402H238L222 540H208Z" fill="${c}"/><path d="M190 410L186 530M214 410L216 530" style="stroke:${mix(c,85,'black')}" stroke-width="1.2" opacity=".5"/>`,
+  shoes: c => `<path d="M176 536H194L196 556H160C160 546 166 538 176 536Z" fill="${c}"/><path d="M206 536H224C234 538 240 546 240 556H204Z" fill="${c}"/>`,
+  skirt: c => `<path d="M146 297H254L266 405C230 413 170 413 134 405Z" fill="${c}"/><path d="M178 300L172 404M222 300L228 404" style="stroke:${mix(c,75,'white')}" stroke-width="1" opacity=".55"/>`,
+  sleeves: c => `<path d="M124 196L142 202L134 300L124 330L110 327L116 296Z" fill="${c}"/><path d="M276 196L258 202L266 300L276 330L290 327L284 296Z" fill="${c}"/>`,
+  hands: c => `<ellipse cx="117" cy="338" rx="8" ry="11" fill="${c}"/><ellipse cx="283" cy="338" rx="8" ry="11" fill="${c}"/>`,
+  face: c => `<path d="M188 118H212L210 176H190Z" fill="${c}"/><path d="M190 140Q200 148 210 140" style="stroke:${mix(c,80,'black')}" stroke-width="1.4" fill="none" opacity=".5"/><ellipse cx="200" cy="94" rx="30" ry="38" fill="${c}"/><ellipse cx="188" cy="96" rx="3.2" ry="2.2" fill="#3b2f2a"/><ellipse cx="212" cy="96" rx="3.2" ry="2.2" fill="#3b2f2a"/><path d="M194 114Q200 118 206 114" stroke="#c4646a" stroke-width="2.4" fill="none" stroke-linecap="round"/>`,
+  shirt: c => { const s = `style="stroke:${mix(c,78,'black')}"`;
+    return `<path d="M150 160C160 150 178 146 188 146L200 172L212 146C222 146 240 150 250 160L280 178L274 206L258 200L254 292H146L142 200L126 206L120 178Z" fill="${c}" ${s} stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M186 145L200 172L190 182L178 152Z" fill="${c}" ${s} stroke-width="1.2" stroke-linejoin="round"/><path d="M214 145L200 172L210 182L222 152Z" fill="${c}" ${s} stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M200 178V290" ${s} stroke-width="1"/><circle cx="203" cy="204" r="1.8" fill="${mix(c,70,'black')}"/><circle cx="203" cy="234" r="1.8" fill="${mix(c,70,'black')}"/><circle cx="203" cy="264" r="1.8" fill="${mix(c,70,'black')}"/>
+    <rect x="214" y="200" width="24" height="8" rx="1.5" fill="#262a3a"/>`; },
+  ep1: c => `<path d="M150 159L184 149L186 155L153 166Z" fill="${c}"/><circle cx="181" cy="152.5" r="1.6" fill="#c9b37a"/>`,
+  ep2: c => `<path d="M250 159L216 149L214 155L247 166Z" fill="${c}"/><circle cx="219" cy="152.5" r="1.6" fill="#c9b37a"/>`,
+  belt: c => `<rect x="146" y="286" width="108" height="11" fill="${c}"/><rect x="194" y="287" width="12" height="9" rx="1" fill="none" stroke="#9a9aa0" stroke-width="1.4"/>`,
+  hairFront: c => `<path d="M168 90C168 60 188 46 206 46C228 48 240 64 238 94C228 76 214 68 200 70C186 72 176 80 168 90Z" fill="${c}"/><path d="M168 88C163 106 165 124 172 136L178 133C174 117 174 101 176 86Z" fill="${c}"/><path d="M190 54C202 62 216 66 232 74" style="stroke:${mix(c,72,'black')}" stroke-width="1.6" fill="none" opacity=".6"/>`
+};
+// draw order: [leaf, shape, clickable segment]
+const ORDER = [['hair','hairBack','hair'],['legs','legs','legs'],['shoes','shoes','shoes'],['skirt','skirt','skirt'],['sleeves','sleeves','sleeves'],
+  ['hands','hands','woman'],['face','face','face'],['shirt','shirt','shirt'],['ep1','ep1','ep1'],['ep2','ep2','ep2'],['belt','belt','belt'],['hair','hairFront','hair']];
+const ALL_LEAVES = Object.keys(DEF);
+const BGS = {
+  beach:['#a9d8f2','#f4e6c8'], forest:['#9cc7a1','#3f6b4b'], night:['#1b2340','#3a3360'], sunset:['#f6b27a','#7b4f8e'], studio:['#ecebe8','#c9c6c0']
+};
+const BG_NAME = {beach:'해변', forest:'숲', night:'밤 도시', sunset:'노을', studio:'스튜디오'};
+
+// segment list (what the tagger + SAM would return)
+const SEGS = [
+  {id:'background', ko:'배경', en:'background', box:[0,0,400,600], members:[], bgOnly:true},
+  {id:'woman', ko:'여성', en:'woman', box:[96,26,208,536], members:ALL_LEAVES},
+  {id:'hair', ko:'금발 단발머리', en:'blonde hair', box:[154,28,98,122], members:['hair']},
+  {id:'face', ko:'얼굴', en:'face', box:[162,52,76,128], members:['face']},
+  {id:'shirt', ko:'흰 칼라 셔츠', en:'white collared shirt', box:[116,142,168,154], members:['shirt']},
+  {id:'epaulets', ko:'견장', en:'epaulets', box:[146,145,108,24], members:['ep1','ep2'], kids:[
+    {id:'ep1', ko:'견장', en:'epaulet · 왼쪽', box:[146,145,44,24], members:['ep1']},
+    {id:'ep2', ko:'견장', en:'epaulet · 오른쪽', box:[210,145,44,24], members:['ep2']}]},
+  {id:'sleeves', ko:'검은 이너 소매', en:'black sleeves', box:[104,192,192,144], members:['sleeves']},
+  {id:'belt', ko:'벨트', en:'belt', box:[140,280,120,22], members:['belt']},
+  {id:'skirt', ko:'검은 미니스커트', en:'black mini skirt', box:[128,292,144,124], members:['skirt']},
+  {id:'legs', ko:'다리', en:'legs', box:[150,396,100,148], members:['legs']},
+  {id:'shoes', ko:'구두', en:'heels', box:[154,530,92,30], members:['shoes']}
+];
+const SEG_BY = {}; SEGS.forEach(s => { SEG_BY[s.id] = s; (s.kids||[]).forEach(k => SEG_BY[k.id] = k); });
+
+const SRC = {family:'반실사', model:'Realism Illustrious', size:'832×1248'};
+let versions = [{colors:{}, hidden:[], bg:null, label:'원본'}];
+let cur = 0, sel = null, hover = null, tool = 'seg', zoom = 1, ar = 'orig', busy = false, lastEdit = null;
+const expanded = {epaulets:true};
+const S = () => versions[cur];
+
+function render(st, o = {}) {
+  const p = o.prefix || 'm', only = o.only, color = id => st.colors[id] || DEF[id];
+  let out = '';
+  if (p === 'm') out += `<defs>
+    <filter id="m-outline" x="-30%" y="-30%" width="160%" height="160%"><feMorphology in="SourceAlpha" operator="dilate" radius="2.6" result="d"/><feFlood style="flood-color:var(--accent)"/><feComposite in2="d" operator="in" result="o"/><feMerge><feMergeNode in="o"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="m-hover" x="-30%" y="-30%" width="160%" height="160%"><feMorphology in="SourceAlpha" operator="dilate" radius="1.6" result="d"/><feFlood style="flood-color:var(--accent)" flood-opacity=".55"/><feComposite in2="d" operator="in" result="o"/><feMerge><feMergeNode in="o"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
+  if (st.bg && (!only || o.withBg)) {
+    const [a, b] = BGS[st.bg];
+    out += `<defs><linearGradient id="${p}-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs>
+      <rect class="${p==='m'?'seg':''}" data-seg="background" data-leaf="background" width="400" height="600" fill="url(#${p}-bg)"/>`;
+  }
+  for (const [leaf, shape, segId] of ORDER) {
+    if (st.hidden.includes(leaf)) continue;
+    if (only && !only.includes(leaf)) continue;
+    out += p === 'm' ? `<g class="seg" data-leaf="${leaf}" data-seg="${segId}">${SHAPES[shape](color(leaf))}</g>` : SHAPES[shape](color(leaf));
+  }
+  return out;
+}
+const mini = (st, box, only, withBg) => {
+  const pad = 6, [x, y, w, h] = box;
+  return `<svg viewBox="${x-pad} ${y-pad} ${w+pad*2} ${h+pad*2}" preserveAspectRatio="xMidYMid meet">${render(st, {prefix:'t'+Math.random().toString(36).slice(2,7), only, withBg})}</svg>`;
+};
+const membersOf = id => id === 'background' ? ['background'] : (SEG_BY[id]?.members || []);
+const visibleSegs = () => SEGS.filter(s => s.bgOnly ? !!S().bg : s.members.some(l => !S().hidden.includes(l)));
+
+function paintScene() {
+  scene.innerHTML = render(S());
+  applyHighlight();
+}
+function applyHighlight() {
+  const on = sel ? membersOf(sel) : [], hl = hover && hover !== sel ? membersOf(hover) : [];
+  scene.classList.toggle('has-sel', !!sel);
+  scene.querySelectorAll('.seg').forEach(g => {
+    const leaf = g.dataset.leaf;
+    g.classList.toggle('on', on.includes(leaf));
+    g.classList.toggle('hl', hl.includes(leaf) && !on.includes(leaf));
+  });
+  document.querySelectorAll('.row[data-id]').forEach(r => {
+    r.classList.toggle('on', r.dataset.id === sel);
+    r.classList.toggle('hl', r.dataset.id === hover);
+  });
+}
+
+function paintRail() {
+  rail.innerHTML = versions.map((v, i) =>
+    `<button class="${i===cur?'cur':''}" data-v="${i}" aria-label="버전 ${i+1}: ${v.label}" title="${v.label}">${mini(v,[0,0,400,600],null,true).replace('<svg ','<svg ')}</button>`).join('');
+  // full-scene thumbnails: render everything including background
+  rail.querySelectorAll('button').forEach((b, i) => { b.innerHTML = `<svg viewBox="0 0 400 600">${render(versions[i], {prefix:'r'+i})}</svg>`; });
+}
+
+/* ---------- side panes ---------- */
+function paintPane() {
+  if (tool === 'seg') {
+    const row = (s, kid) => `<button class="row" data-id="${s.id}" ${s.kids?`aria-expanded="${!!expanded[s.id]}"`:''}>
+        <span class="thumb">${mini(S(), s.box, s.bgOnly ? null : s.members.filter(l => !S().hidden.includes(l)), s.bgOnly)}</span>
+        <span class="lbl"><b>${s.ko}${s.kids?` <small>(${s.kids.filter(k=>!S().hidden.includes(k.id)).length})</small>`:''}</b><small>${s.en}</small></span>
+        ${s.kids ? ICON_CHEV : ''}</button>`;
+    pane.innerHTML = `<h2>세그먼트 <button class="ghost" id="dlAll">${ICON_DL}모두 다운로드</button></h2>
+      <ul class="segs">${visibleSegs().map(s => `<li>${row(s)}${s.kids && expanded[s.id] ? `<ul>${s.kids.filter(k => !S().hidden.includes(k.id)).map(k => `<li>${row(k, true)}</li>`).join('')}</ul>` : ''}</li>`).join('')}</ul>`;
+  } else if (tool === 'brush') {
+    pane.innerHTML = `<h2>마스크 브러시</h2>
+      <p class="note">자동 세그먼트로 안 잡히는 부분을 직접 칠해서 선택합니다. 칠한 영역만 다시 그려요.</p>
+      <div class="field"><label for="bSize">브러시 크기 <b id="bSizeV">${brushSize}</b>px</label><input type="range" id="bSize" min="6" max="80" value="${brushSize}"></div>
+      <div class="field"><span>모드</span><div class="seg2"><button data-bm="paint" aria-pressed="${!erasing}">칠하기</button><button data-bm="erase" aria-pressed="${erasing}">지우개</button><button id="bClear">모두 지우기</button></div></div>`;
+  } else if (tool === 'color') {
+    const sw = ['#c8323a','#e2774b','#e3c04a','#2f7d4f','#2f5fb3','#1f2a4a','#6d4bb0','#e58fb0','#6b4a32','#d8c3a5','#f6f5f2','#8a8a8f','#1c1c1f','#d6b07d'];
+    pane.innerHTML = `<h2>색상</h2>
+      <p class="note">${sel ? `<b>${SEG_BY[sel]?.ko || '배경'}</b>의 색을 AI 없이 바로 바꿉니다. 질감은 그대로 유지돼요.` : '먼저 세그먼트 탭에서 바꿀 부분을 선택하세요.'}</p>
+      <div class="swatches">${sw.map(c => `<button data-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join('')}</div>`;
+  } else if (tool === 'crop') {
+    pane.innerHTML = `<h2>자르기 <span class="badge">3단계</span></h2>
+      <p class="note">이미지 일부를 잘라내거나 회전합니다. 반대로 바깥을 늘리려면 아래 <b>종횡비</b>를 바꾸세요. 늘어난 부분은 AI가 채웁니다.</p>
+      <div class="seg2"><button aria-pressed="true">자유</button><button>1:1</button><button>3:4</button><button>9:16</button></div>`;
+  } else {
+    pane.innerHTML = `<h2>그려서 지시 <span class="badge">3단계</span></h2>
+      <p class="note">이미지 위에 대충 선을 그리고 "여기에 가방 추가"처럼 입력하면, 그린 모양을 따라 새로 그려 넣습니다. 포즈를 바꾸거나 물건을 추가할 때 씁니다.</p>`;
+  }
+}
+
+/* ---------- auto routing (what the real router decides) ---------- */
+const COLORS = [[/빨간|빨강|레드|red/i,'#c8323a','빨간색'],[/파란|파랑|블루|blue/i,'#2f5fb3','파란색'],[/남색|네이비|navy/i,'#1f2a4a','남색'],
+  [/검은|검정|블랙|black/i,'#1c1c1f','검은색'],[/흰|하얀|화이트|white/i,'#f6f5f2','흰색'],[/초록|녹색|그린|green/i,'#2f7d4f','초록색'],
+  [/노란|노랑|옐로|yellow/i,'#e3c04a','노란색'],[/분홍|핑크|pink/i,'#e58fb0','분홍색'],[/보라|퍼플|purple/i,'#6d4bb0','보라색'],
+  [/갈색|브라운|brown/i,'#6b4a32','갈색'],[/회색|그레이|gray|grey/i,'#8a8a8f','회색'],[/베이지|beige/i,'#d8c3a5','베이지'],
+  [/은발|실버|silver/i,'#c9c9cf','은색'],[/금발|블론드|blonde/i,'#d6b07d','금색'],[/주황|오렌지|orange/i,'#e2774b','주황색']];
+const REMOVE = /지워|지우|제거|없애|빼\s*줘|빼고|remove|erase/i;
+const BG_WORDS = [[/바다|해변|비치|beach/i,'beach'],[/숲|공원|forest/i,'forest'],[/밤|야경|night/i,'night'],[/노을|석양|sunset/i,'sunset'],[/스튜디오|studio/i,'studio']];
+
+function decide(text) {
+  const t = text.trim();
+  const bgTarget = BG_WORDS.find(([re]) => re.test(t));
+  const color = COLORS.find(([re]) => re.test(t));
+  if (/배경/.test(t) && /투명|누끼|제거|없애|지워/.test(t)) return {kind:'bgremove', act:'배경 제거', model:'BiRefNet'};
+  if (REMOVE.test(t) && sel) return {kind:'remove', act:'물체 제거', model:'LaMa'};
+  if (REMOVE.test(t) && !sel) return {kind:'need-sel', act:'물체 제거', model:'LaMa', warn:'지울 부분을 먼저 선택하세요'};
+  if (sel === 'background' || (!sel && (/배경/.test(t) || bgTarget))) return {kind:'bg', act: sel ? '부분 다시 그리기' : '문장 편집', model: sel ? SRC.model : 'Qwen-Image-Edit', bg: bgTarget ? bgTarget[1] : 'studio'};
+  if (sel) return {kind:'inpaint', act:'부분 다시 그리기', model:SRC.model, why:`원본과 같은 ${SRC.family} 계열`, color};
+  return {kind:'instruct', act:'문장 편집', model:'Qwen-Image-Edit', why:'선택 없음 → 이미지 전체 지시 편집'};
+}
+
+const SUGGEST_SEL = ['빨간색으로 바꿔줘','지워줘','가죽 재질로'];
+const SUGGEST_NONE = ['배경을 해변으로','배경을 밤 도시로','배경 투명하게'];
+function paintRoute() {
+  const t = promptIn.value;
+  let h = '';
+  if (sel) h += `<span class="pill sel">@${SEG_BY[sel]?.ko || '배경'}<button type="button" id="clearSel" aria-label="선택 해제">${ICON_X}</button></span>`;
+  if (brushHasPaint()) h += `<span class="pill sel">@브러시 영역<button type="button" id="clearBrush" aria-label="브러시 영역 지우기">${ICON_X}</button></span>`;
+  if (t.trim()) {
+    const d = decide(t);
+    h += d.warn ? `<span class="hint">${d.warn}</span>` : `<span class="pill auto">자동 선택 → <b>${d.act}</b> · ${d.model}${d.why?` <span class="hint">(${d.why})</span>`:''}</span>`;
+  } else {
+    h += (sel ? SUGGEST_SEL : SUGGEST_NONE).map(s => `<button type="button" class="pill sug" data-sug="${s}">${s}</button>`).join('');
+  }
+  route.innerHTML = h;
+  sendBtn.disabled = !t.trim() || busy;
+}
+
+/* ---------- edits ---------- */
+function clone(st) { return {colors:{...st.colors}, hidden:[...st.hidden], bg:st.bg, label:''}; }
+function commit(next, label) {
+  next.label = label;
+  versions = versions.slice(0, cur + 1).concat([next]);
+  cur = versions.length - 1;
+  if (sel && !visibleSegs().some(s => s.id === sel || (s.kids||[]).some(k => k.id === sel && !S().hidden.includes(k.id)))) sel = null;
+  if (sel && membersOf(sel).every(l => S().hidden.includes(l))) sel = null;
+  refresh();
+}
+function runBusy(text, done) {
+  busy = true; paintRoute();
+  const b = document.createElement('div'); b.className = 'busy';
+  b.innerHTML = `<div><span>${text}</span><i></i></div>`;
+  imgbox.appendChild(b);
+  const bar = b.querySelector('i'), dur = matchMedia('(prefers-reduced-motion: reduce)').matches ? 300 : 1300, t0 = performance.now();
+  const tick = now => { const p = Math.min(1, (now - t0) / dur); bar.style.setProperty('--p', (p*100).toFixed(0)+'%');
+    if (p < 1) requestAnimationFrame(tick); else { b.remove(); busy = false; done(); paintRoute(); } };
+  requestAnimationFrame(tick);
+}
+function applyEdit(text) {
+  if (brushHasPaint() && !sel) { toast('미리보기에서는 브러시 영역 편집 결과를 보여줄 수 없어요. 실제 앱에서 그 영역만 다시 그립니다.'); clearBrush(); return; }
+  const d = decide(text);
+  if (d.warn) { toast(d.warn); return; }
+  lastEdit = text;
+  runBusy(`${d.act} 중 · ${d.model}`, () => {
+    const n = clone(S());
+    if (d.kind === 'bgremove') { n.bg = null; if (sel === 'background') sel = null; commit(n, '배경 제거'); return; }
+    if (d.kind === 'remove') {
+      if (sel === 'background') n.bg = null; else n.hidden.push(...membersOf(sel));
+      const name = SEG_BY[sel]?.ko || '배경'; sel = null; commit(n, `${name} 제거`); return;
+    }
+    if (d.kind === 'bg') { n.bg = d.bg; commit(n, `배경: ${BG_NAME[d.bg]}`); return; }
+    if (d.kind === 'inpaint') {
+      const ms = membersOf(sel).filter(l => !['face','hands','legs'].includes(l) || sel === l);
+      const c = d.color ? d.color[1] : ['#7a3b46','#3d5a80','#5b6b3a','#8d6e63','#46406b'][versions.length % 5];
+      ms.forEach(l => n.colors[l] = c);
+      commit(n, `${SEG_BY[sel].ko}: ${text.trim()}`);
+      if (!d.color) toast('미리보기에서는 색만 바뀝니다. 실제 앱에서는 입력한 내용대로 그 부분을 새로 그려요.');
+      return;
+    }
+    toast('미리보기에서는 배경·색·제거 편집만 보여줄 수 있어요. 실제 앱에서는 문장대로 이미지 전체를 편집합니다.');
+  });
+}
+
+/* ---------- brush ---------- */
+const cv = $('#brush'), cx = cv.getContext('2d');
+let brushSize = 28, erasing = false, painting = false, painted = false;
+function sizeCanvas() { const r = imgbox.getBoundingClientRect(); const dpr = devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width*dpr)) { cv.width = Math.round(r.width*dpr); cv.height = Math.round(r.height*dpr); painted = false; } }
+function brushHasPaint() { return painted; }
+function clearBrush() { cx.clearRect(0,0,cv.width,cv.height); painted = false; paintRoute(); }
+function dot(e) {
+  const r = cv.getBoundingClientRect(), dpr = cv.width / r.width;
+  cx.globalCompositeOperation = erasing ? 'destination-out' : 'source-over';
+  cx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#4d78f5';
+  cx.globalAlpha = .45;
+  cx.beginPath(); cx.arc((e.clientX - r.left)*dpr, (e.clientY - r.top)*dpr, brushSize/2*dpr, 0, Math.PI*2); cx.fill();
+  if (!erasing && !painted) { painted = true; paintRoute(); }
+}
+cv.addEventListener('pointerdown', e => { if (tool !== 'brush') return; painting = true; cv.setPointerCapture(e.pointerId); dot(e); });
+cv.addEventListener('pointermove', e => { if (painting) dot(e); });
+cv.addEventListener('pointerup', () => { painting = false; });
+
+/* ---------- layout & zoom ---------- */
+const AR = {orig:2/3, '1:1':1, '3:4':3/4, '9:16':9/16, '16:9':16/9};
+function fit() {
+  const cs = getComputedStyle(area);
+  const aw = area.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const ah = area.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const r = AR[ar]; let w = Math.min(aw, ah * r); let h = w / r;
+  w *= zoom; h *= zoom;
+  frame.style.width = w + 'px'; frame.style.height = h + 'px';
+  const iw = Math.min(w, h * 2/3), ih = iw * 1.5;
+  imgbox.style.width = iw + 'px'; imgbox.style.height = ih + 'px';
+  frame.classList.toggle('outpaint', ar !== 'orig');
+  let tag = frame.querySelector('.tag');
+  if (ar !== 'orig') { if (!tag) { tag = document.createElement('span'); tag.className = 'tag'; frame.appendChild(tag); } tag.textContent = `빗금 영역은 AI가 채워서 ${ar}로 확장`; }
+  else if (tag) tag.remove();
+  sizeCanvas();
+}
+new ResizeObserver(fit).observe(area);
+function setZoom(z) { zoom = Math.max(.5, Math.min(2.5, Math.round(z*10)/10)); $('#zVal').textContent = Math.round(zoom*100) + '%'; fit(); }
+$('#zIn').onclick = () => setZoom(zoom + .1);
+$('#zOut').onclick = () => setZoom(zoom - .1);
+area.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(zoom + (e.deltaY < 0 ? .1 : -.1)); } }, {passive:false});
+
+/* ---------- events ---------- */
+function refresh() { paintScene(); paintRail(); paintPane(); paintRoute(); }
+function select(id) { sel = sel === id ? null : id; applyHighlight(); paintRoute(); if (tool === 'color') paintPane(); }
+
+scene.addEventListener('click', e => {
+  if (tool === 'brush') return;
+  const g = e.target.closest('.seg');
+  if (!g) { sel = null; applyHighlight(); paintRoute(); return; }
+  if (tool !== 'seg' && tool !== 'color') setTool('seg');
+  select(g.dataset.seg);
+});
+scene.addEventListener('pointermove', e => { const g = e.target.closest('.seg'); const id = g ? g.dataset.seg : null; if (id !== hover) { hover = id; applyHighlight(); } });
+scene.addEventListener('pointerleave', () => { hover = null; applyHighlight(); });
+
+pane.addEventListener('click', e => {
+  const r = e.target.closest('.row');
+  if (r) {
+    const s = SEG_BY[r.dataset.id];
+    if (s.kids && e.target.closest('.chev')) { expanded[s.id] = !expanded[s.id]; paintPane(); applyHighlight(); return; }
+    select(r.dataset.id); return;
+  }
+  if (e.target.closest('#dlAll')) toast('실제 앱에서는 세그먼트마다 투명 PNG로 저장돼요');
+  const sw = e.target.closest('[data-color]');
+  if (sw) {
+    if (!sel) { toast('먼저 바꿀 부분을 선택하세요'); return; }
+    const n = clone(S());
+    if (sel === 'background') { toast('배경은 프롬프트로 바꿔 보세요. 예: 배경을 노을로'); return; }
+    membersOf(sel).forEach(l => n.colors[l] = sw.dataset.color);
+    commit(n, `${SEG_BY[sel].ko} 색 변경`);
+  }
+  const bm = e.target.closest('[data-bm]');
+  if (bm) { erasing = bm.dataset.bm === 'erase'; paintPane(); }
+  if (e.target.closest('#bClear')) clearBrush();
+});
+pane.addEventListener('pointerover', e => { const r = e.target.closest('.row'); const id = r ? r.dataset.id : null; if (id !== hover) { hover = id; applyHighlight(); } });
+pane.addEventListener('pointerleave', () => { hover = null; applyHighlight(); });
+pane.addEventListener('input', e => { if (e.target.id === 'bSize') { brushSize = +e.target.value; $('#bSizeV').textContent = brushSize; } });
+
+function setTool(t) {
+  tool = t;
+  document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === t));
+  app.classList.toggle('tool-brush', t === 'brush');
+  paintPane(); applyHighlight();
+}
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+
+rail.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; cur = +b.dataset.v; if (sel && membersOf(sel).every(l => S().hidden.includes(l))) sel = null; refresh(); });
+route.addEventListener('click', e => {
+  if (e.target.closest('#clearSel')) { sel = null; applyHighlight(); paintRoute(); return; }
+  if (e.target.closest('#clearBrush')) { clearBrush(); return; }
+  const s = e.target.closest('[data-sug]'); if (s) { promptIn.value = s.dataset.sug; paintRoute(); promptIn.focus(); }
+});
+promptIn.addEventListener('input', paintRoute);
+$('#form').addEventListener('submit', e => { e.preventDefault(); const t = promptIn.value; if (!t.trim() || busy) return; promptIn.value = ''; applyEdit(t); });
+
+$('#regenBtn').onclick = () => {
+  if (cur === 0) { toast('원본 재생성: 같은 프롬프트, 새 시드로 다시 생성합니다'); return; }
+  const prev = versions[cur-1], n = clone(prev);
+  Object.keys(S().colors).forEach(l => { if (S().colors[l] !== prev.colors[l]) n.colors[l] = ['#7a3b46','#3d5a80','#5b6b3a','#8d6e63','#46406b','#a0522d'][(versions.length+1) % 6]; });
+  n.hidden = [...S().hidden]; n.bg = S().bg;
+  runBusy(`같은 편집, 새 시드로 다시 생성 중 · ${SRC.model}`, () => commit(n, '재생성'));
+};
+$('#videoBtn').onclick = () => toast('동영상 만들기는 4단계에서 추가됩니다 (Wan 2.2)');
+$('#arSel').onchange = e => { ar = e.target.value; $('#arLabel').textContent = '종횡비 · ' + (ar === 'orig' ? '원본' : ar); fit(); };
+$('#saveBtn').onclick = () => toast(`버전 ${cur+1} (${S().label})을 PNG로 저장합니다. 실제 앱에서는 outputs 폴더에 저장돼요`);
+$('#backBtn').onclick = () => toast('생성 화면으로 돌아갑니다. 이 미리보기에는 편집기만 있어요');
+$('#panelBtn').onclick = () => { app.classList.toggle('no-panel'); fit(); };
+$('#favBtn').onclick = e => { const b = e.currentTarget; const on = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', on); toast(on ? '즐겨찾기에 추가했어요' : '즐겨찾기에서 뺐어요'); };
+document.querySelectorAll('[data-fb]').forEach(b => b.onclick = () => toast('평가를 기록했어요. 자동 모델 선택을 개선하는 데 씁니다'));
+document.querySelectorAll('[data-msg]').forEach(b => b.onclick = () => toast(b.dataset.msg));
+document.addEventListener('keydown', e => {
+  if (e.target === promptIn) return;
+  if (e.key === 'Escape') { sel = null; applyHighlight(); paintRoute(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && cur > 0) { e.preventDefault(); cur--; refresh(); }
+});
+
+let tt; function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 2800); }
+
+// opening state: shirt selected so the segment flow is visible immediately
+sel = 'shirt';
+refresh(); fit();
+})();
+</script>
