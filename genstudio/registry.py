@@ -44,6 +44,10 @@ class Family:
     latent: str = "sdxl"                # sdxl | sd3 | generic
     encoder: str = "clip"               # clip | qwen21 (TextEncodeQwenImage21)
     sigmas: str | None = None           # fixed step schedule for distilled models
+    shift_node: str = "auraflow"        # auraflow | sd3 (which ModelSampling node applies `shift`)
+    high_noise: str | None = None       # Wan 2.2: high-noise expert file; the model file is the low-noise expert
+    switch_step: int | None = None      # step where the high-noise expert hands over to the low-noise one
+    loras: list[dict] = field(default_factory=list)   # [{name, stage: high|low|main|both, strength}]
     clip: str | None = None
     clip_type: str | None = None
     vae: str | None = None
@@ -68,6 +72,7 @@ class ModelSpec:
     role: str                           # main | alt
     file: FileSpec
     prompt_prefix: str | None = None
+    keywords: list[str] = field(default_factory=list)   # words that pick this model directly
 
     @property
     def prefix(self) -> str:

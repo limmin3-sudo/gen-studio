@@ -72,6 +72,55 @@ families:
         size: 675509688
         sha256: bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
 
+  wan22:
+    name: "Wan 2.2 14B"
+    loader: unet
+    clip: umt5_xxl_fp8_e4m3fn_scaled.safetensors
+    clip_type: wan
+    vae: wan_2.1_vae.safetensors        # Wan 2.2 14B는 2.1과 같은 VAE를 씁니다
+    latent: video                       # 1프레임 영상 = 사진
+    shift_node: sd3
+    shift: 5
+    high_noise: wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+    switch_step: 2
+    # ComfyUI 공식 템플릿의 4단계 LightX2V 설정 (빠름). 끄려면 loras를 비우고 steps 20, cfg 3.5, shift 8, switch_step 10
+    loras:
+      - {name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors, stage: high, strength: 1.0}
+      - {name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors, stage: low, strength: 1.0}
+    steps: 4
+    cfg: 1.0
+    sampler: euler
+    scheduler: simple
+    negative: true
+    prompt_prefix: ""
+    negative_default: "oversaturated, overexposed, blurry details, subtitles, watermark, worst quality, low quality, jpeg artifacts, ugly, deformed, extra fingers, bad hands, bad face, malformed limbs, fused fingers, messy background"
+    files:
+      - name: wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+        dir: diffusion_models
+        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+        size: 14293923632
+        sha256: cad711ae211c8b23455ec68cd6a190a33a3d874234a77eb57266d73f8f0e6c9f
+      - name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
+        dir: loras
+        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
+        size: 1226977424
+        sha256: 698321cb86bd30c4af06c9b84e656a1048c8cb54e06d50694536fb5de37fde41
+      - name: wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+        dir: loras
+        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+        size: 1226977424
+        sha256: ec95216e614b3c132c11bfb387b11feedf62163150ccc9068bca8a189771e75a
+      - name: umt5_xxl_fp8_e4m3fn_scaled.safetensors
+        dir: text_encoders
+        url: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+        size: 6735906897
+        sha256: c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68
+      - name: wan_2.1_vae.safetensors
+        dir: vae
+        url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
+        size: 253815318
+        sha256: 2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b
+
 models:
   - id: cyberrealistic-zit
     name: "CyberRealistic Z-Image Turbo v10"
@@ -134,3 +183,17 @@ models:
       url: https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors
       size: 7256787829
       sha256: 8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c
+
+  # 극실사 사진. 4단계 영상 기능에서도 같은 파일을 씁니다.
+  - id: wan22-14b
+    name: "Wan 2.2 14B"
+    family: wan22
+    style: realistic
+    role: alt
+    keywords: ["극실사", "초실사", "하이퍼리얼", "hyperrealistic", "hyper realistic", "ultra realistic", "ultra-realistic", "wan"]
+    file:
+      name: wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+      dir: diffusion_models
+      url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+      size: 14293923632
+      sha256: e71b96d7c82e638694c5e7fb98fac4bfb0e4ddc5fbbb4b1df40da8f0f1278a97

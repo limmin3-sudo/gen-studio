@@ -100,3 +100,31 @@ def test_qwen21_partial_denoise_trims_schedule():
     g, _ = workflows.inpaint(QWEN, "gen-studio/a.png", "gen-studio/m.png", "x", "", 1)
     assert_links_valid(g)
     assert node(g, "ManualSigmas")["sigmas"].startswith("1.0")
+
+
+WAN = REG.get("wan22-14b")
+
+
+def test_wan22_two_experts_like_comfy_template():
+    g, _ = workflows.txt2img(WAN, "a woman by the window", "", 832, 1216, 9)
+    assert_links_valid(g)
+    unets = sorted(n["inputs"]["unet_name"] for n in g.values() if n["class_type"] == "UNETLoader")
+    assert unets == ["wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"]
+    assert node(g, "CLIPLoader")["type"] == "wan"
+    assert node(g, "EmptyHunyuanLatentVideo")["length"] == 1
+    ks = [n["inputs"] for n in g.values() if n["class_type"] == "KSamplerAdvanced"]
+    assert [(k["start_at_step"], k["end_at_step"], k["add_noise"]) for k in ks] == [(0, 2, "enable"), (2, 10000, "disable")]
+    assert all(k["steps"] == 4 and k["cfg"] == 1.0 for k in ks)
+    loras = [n["inputs"]["lora_name"] for n in g.values() if n["class_type"] == "LoraLoaderModelOnly"]
+    assert len(loras) == 2 and all("lightx2v" in x for x in loras)
+    assert all(n["inputs"]["shift"] == 5 for n in g.values() if n["class_type"] == "ModelSamplingSD3")
+
+
+def test_wan22_light_edit_uses_low_noise_only():
+    g, _ = workflows.img2img(WAN, "gen-studio/a.png", "", "", 1, 0.4)
+    assert_links_valid(g)
+    ks = [n["inputs"] for n in g.values() if n["class_type"] == "KSamplerAdvanced"]
+    assert len(ks) == 1 and ks[0]["start_at_step"] == 2 and ks[0]["add_noise"] == "enable"
+    g, _ = workflows.inpaint(WAN, "gen-studio/a.png", "gen-studio/m.png", "x", "", 1)
+    assert_links_valid(g)
+    assert sum(1 for n in g.values() if n["class_type"] == "DifferentialDiffusion") == 2

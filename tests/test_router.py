@@ -63,3 +63,9 @@ def test_text_and_poster_requests_go_to_qwen():
         assert d.style == "text" and d.model.id == "qwen-image-21-turbo", p
     # plain portrait requests are unaffected
     assert pick("창가에 앉은 여자 실사").model.id == "cyberrealistic-zit"
+
+
+def test_keyword_picks_wan():
+    d = pick("극실사 인물 사진, 창가")
+    assert d.model.id == "wan22-14b" and d.style == "realistic"
+    assert pick("극실사", style="semi").model.family.id == "illustrious"   # explicit style wins

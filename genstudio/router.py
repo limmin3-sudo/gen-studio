@@ -118,7 +118,12 @@ def choose(
         chosen_style = model.style
         reasons.append("직접 고른 모델")
     else:
-        if style in STYLE_LABEL:
+        kw_model, kw = _keyword_model(registry, prompt, models_dir) if style == "auto" else (None, None)
+        if kw_model:
+            model = kw_model
+            chosen_style = model.style
+            reasons.append(f"'{kw}' → {model.name}")
+        elif style in STYLE_LABEL:
             chosen_style = style
             reasons.append(f"{STYLE_LABEL[style]} 선택")
         else:
@@ -129,7 +134,8 @@ def choose(
             else:
                 chosen_style = default_style
                 reasons.append(f"스타일 언급 없음 → 기본값 {STYLE_LABEL.get(default_style, default_style)}")
-        model = pick_model(registry, chosen_style, models_dir, reasons)
+        if not kw_model:
+            model = pick_model(registry, chosen_style, models_dir, reasons)
 
     # 2) size
     if width and height:
@@ -146,6 +152,15 @@ def choose(
         w, h = SIZES[chosen_aspect]
 
     return Decision(model=model, style=chosen_style, aspect=chosen_aspect, width=w, height=h, reasons=reasons)
+
+
+def _keyword_model(registry: Registry, prompt: str, models_dir: Path | None):
+    low = prompt.lower()
+    for m in registry.models:
+        for w in m.keywords:
+            if w.lower() in low and m.installed(models_dir) is not False:
+                return m, w
+    return None, None
 
 
 def pick_model(registry: Registry, style: str, models_dir: Path | None, reasons: list[str]) -> ModelSpec:

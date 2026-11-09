@@ -24,7 +24,7 @@ class FakeComfy:
     def _render(self, graph: dict) -> bytes:
         w = h = 64
         for node in graph.values():
-            if node["class_type"] in ("EmptyLatentImage", "EmptySD3LatentImage"):
+            if node["class_type"] in ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyHunyuanLatentVideo"):
                 w, h = node["inputs"]["width"], node["inputs"]["height"]
             if node["class_type"] == "LoadImage":
                 data = self.uploads.get(node["inputs"]["image"])

@@ -29,7 +29,7 @@ def test_status_and_models(client):
     assert "RTX 4080" in s["comfyui"]["devices"][0]
     models = client.get("/api/models").json()
     assert {m["id"] for m in models} == {"cyberrealistic-zit", "realdream-zit", "realism-illustrious", "semireal-mm",
-                                         "qwen-image-21-turbo"}
+                                         "qwen-image-21-turbo", "wan22-14b"}
 
 
 def test_route_preview(client):
