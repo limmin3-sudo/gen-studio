@@ -78,6 +78,33 @@ class SegmentRequest(BaseModel):
     negative_points: list[dict] | None = None
 
 
+import re as _re
+
+# "show more of the body" needs a bigger canvas, not an edit inside the same frame
+_EXPAND_RULES = [
+    (_re.compile(r"전신|발끝|발까지|신발까지|다리까지|full[\s-]?body|head[\s-]?to[\s-]?toe|whole body", _re.I), "9:16",
+     "full body shot, legs and feet visible, shoes"),
+    (_re.compile(r"무릎까지|허벅지까지|knees?|thighs?|three[\s-]?quarter", _re.I), "2:3",
+     "three-quarter shot, legs visible down to the knees"),
+    (_re.compile(r"줌\s*아웃|멀리서|더 넓게|넓게 보이|zoom(ed)?[\s-]?out|wider shot", _re.I), "16:9",
+     "wide shot, more of the surroundings"),
+]
+
+
+def expand_intent(text: str, w: int, h: int) -> tuple[str, str, str] | None:
+    """(aspect, anchor, prompt addition) when the request asks to see more than the frame holds."""
+    for rx, aspect, extra in _EXPAND_RULES:
+        if rx.search(text or ""):
+            r = ASPECTS[aspect]
+            if abs(w / h - r) < 0.02 or (aspect != "16:9" and w / h < r):
+                aspect = "9:16" if w / h > 9 / 16 + 0.02 else None
+            if aspect is None:
+                return None
+            anchor = "center" if aspect == "16:9" else "top"
+            return aspect, anchor, extra
+    return None
+
+
 def outpaint_pads(w: int, h: int, aspect: str | None, anchor: str = "center", pads: dict | None = None) -> dict:
     """Pixels to add on each side so the image reaches `aspect` without cropping (multiples of 16)."""
     if pads:
@@ -269,6 +296,13 @@ class Engine:
         if req.mode == "inpaint" and req.fill == "prompt" and not req.prompt.strip():
             raise ValueError("무엇을 그릴지 입력하거나 '모델이 알아서 채우기'를 고르세요.")
         extra: dict = {}
+        if req.mode in ("reference", "variation") and not req.references and req.prompt.strip():
+            hit = expand_intent(req.prompt, src["width"], src["height"])
+            if hit:
+                aspect, anchor, addition = hit
+                req = req.model_copy(update={"mode": "outpaint", "aspect": aspect, "anchor": anchor,
+                                             "label": req.label or f"캔버스 늘리기 {aspect}: {req.prompt.strip()}"})
+                extra["auto_expand"] = {"aspect": aspect, "anchor": anchor, "add": addition}
         if req.mode == "reference":
             if not req.prompt.strip():
                 raise ValueError("어떻게 바꿀지 입력하세요. 예: 배경을 우주선 함교로, 같은 인물 유지")
@@ -278,9 +312,13 @@ class Engine:
             model, why = self._reference_model(req.model), "참고 편집 → Qwen-Image 2.1"
             extra = {"ref_ids": ids, "character": char["name"] if char else None}
         elif req.mode == "outpaint":
-            extra = {"pads": outpaint_pads(src["width"], src["height"], req.aspect, req.anchor, req.pads)}
+            extra["pads"] = outpaint_pads(src["width"], src["height"], req.aspect, req.anchor, req.pads)
         if req.mode == "reference":
             pass                               # model already chosen above
+        elif req.mode == "outpaint" and extra.get("auto_expand") and (not req.model or req.model == "auto"):
+            model, why = router.model_for_edit(self.registry, src.get("model_id"), self.settings.models_dir,
+                                               self.settings.default_style)
+            why = f"화면 밖을 그려야 해서 캔버스 늘리기 ({extra['auto_expand']['aspect']}, 원본은 위에 고정)"
         elif req.model and req.model != "auto":
             model, why = self.registry.get(req.model), "직접 고른 모델"
         else:
@@ -512,7 +550,8 @@ class Engine:
                                                models_dir=self.settings.models_dir, **lw)
         elif req.mode == "outpaint":
             mask_bytes = None
-            prompt = req.prompt.strip() or base_prompt
+            auto = job.decision.get("auto_expand")
+            prompt = ", ".join(x for x in (base_prompt, auto["add"]) if x) if auto else (req.prompt.strip() or base_prompt)
             graph, extra = workflows.outpaint(model, image_name, job.decision["pads"], prompt, req.negative, seed,
                                               models_dir=self.settings.models_dir, **lw)
         else:

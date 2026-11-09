@@ -168,3 +168,21 @@ def test_korean_prompts_are_rewritten_for_models_that_need_english(client, fake)
     e = wait_job(client, client.post("/api/edit", json={"image_id": rec["id"], "mode": "variation", "prompt": "노을 지는 배경"}).json()["id"])
     er = client.get(f"/api/images/{e['result_ids'][0]}").json()
     assert er["edit_prompt"] == "노을 지는 배경" and er["edit_prompt_en"].startswith("1girl") and er["label"].endswith("노을 지는 배경")
+
+
+def test_full_body_request_becomes_canvas_expansion(client, fake):
+    from genstudio.jobs import expand_intent
+    assert expand_intent("전신 나오게 해줘", 1024, 1024)[:2] == ("9:16", "top")
+    assert expand_intent("허벅지까지 보이게", 1024, 1024)[0] == "2:3"
+    assert expand_intent("볼륨감 키워줘", 1024, 1024) is None
+    assert expand_intent("full body", 576, 1024) is None            # already 9:16 tall
+    src = imported(client, 1024, 1024)
+    j = client.post("/api/edit", json={"image_id": src, "mode": "reference", "prompt": "발끝까지 다 나오게 해줘"}).json()
+    assert j["decision"]["auto_expand"]["aspect"] == "9:16" and "캔버스" in j["decision"]["reasons"][0]
+    j = wait_job(client, j["id"])
+    assert j["status"] == "done", j["error"]
+    pad = nodes(last_graph(fake), "ImagePadForOutpaint")[0]
+    assert pad["top"] == 0 and pad["bottom"] > 700
+    assert "full body shot" in nodes(last_graph(fake), "CLIPTextEncode")[0]["text"]
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert rec["label"].startswith("캔버스 늘리기 9:16")
