@@ -42,3 +42,19 @@ def test_missing_model_list_and_civitai_key(client, settings, monkeypatch, tmp_p
     assert len(names) == len(missing)                       # each file once
     assert client.post("/api/app/civitai-key", json={"key": "short"}).status_code == 400
     assert client.post("/api/app/civitai-key", json={"key": "abcdef0123456789"}).json()["ok"]
+
+
+def test_unused_model_files(client, settings, tmp_path):
+    settings.comfy_path = tmp_path / "ComfyUI"
+    md = settings.comfy_path / "models"
+    (md / "diffusion_models").mkdir(parents=True)
+    (md / "loras").mkdir()
+    (md / "diffusion_models" / "old_model.safetensors").write_bytes(b"x" * 100)
+    (md / "diffusion_models" / "half.safetensors.part").write_bytes(b"x" * 10)
+    (md / "loras" / "mine.safetensors").write_bytes(b"x")                       # LoRAs are not touched here
+    keep = md / "vae" / "ae.safetensors"; keep.parent.mkdir(); keep.write_bytes(b"x")   # used by Z-Image
+    r = client.get("/api/app/models/unused").json()
+    assert [f["path"] for f in r["files"]] == ["diffusion_models/old_model.safetensors", "diffusion_models/half.safetensors.part"]
+    assert r["bytes"] == 110
+    d = client.post("/api/app/models/unused/delete", json={"paths": ["diffusion_models/old_model.safetensors", "vae/ae.safetensors", "../../etc/passwd"]}).json()
+    assert d["deleted"] == 1 and keep.exists() and not (md / "diffusion_models" / "old_model.safetensors").exists()

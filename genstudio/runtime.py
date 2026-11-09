@@ -274,3 +274,44 @@ class Downloads:
                         st["failed"].append(f"{f.name}: {e}")
         finally:
             st.update(running=False, finished=True)
+
+
+# ------------------------------------------------------------------ unused model files
+MODEL_DIRS = ("diffusion_models", "checkpoints", "text_encoders", "vae", "upscale_models", "controlnet",
+              "model_patches", "background_removal", "unet", "clip")
+
+
+def unused_model_files(registry, models_dir: Path | None, extra_keep: set[str] | None = None) -> list[dict]:
+    """Model files in ComfyUI/models that no listed model or tool uses (old lineup leftovers, half downloads).
+    LoRAs are left to the LoRA tab."""
+    if not models_dir or not models_dir.exists():
+        return []
+    keep = {f"{f.dir}/{f.name}" for m in registry.models for f in m.all_files()}
+    keep |= {f"{f.dir}/{f.name}" for files in registry.tools.values() for f in files}
+    keep |= extra_keep or set()
+    out = []
+    for d in MODEL_DIRS:
+        folder = models_dir / d
+        if not folder.is_dir():
+            continue
+        for p in folder.rglob("*"):
+            if not p.is_file() or p.name.startswith(".") or p.suffix.lower() in (".txt", ".md", ".json", ".yaml"):
+                continue
+            rel = p.relative_to(models_dir).as_posix()
+            if rel in keep or p.name.startswith("put_"):
+                continue
+            out.append({"path": rel, "size": p.stat().st_size, "partial": p.name.endswith(".part")})
+    return sorted(out, key=lambda x: -x["size"])
+
+
+def delete_model_files(models_dir: Path, paths: list[str], allowed: list[dict]) -> int:
+    ok = {a["path"] for a in allowed}
+    n = 0
+    for rel in paths:
+        if rel not in ok:
+            continue
+        p = (models_dir / rel).resolve()
+        if models_dir.resolve() in p.parents and p.is_file():
+            p.unlink()
+            n += 1
+    return n

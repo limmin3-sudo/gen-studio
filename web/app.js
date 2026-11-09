@@ -488,7 +488,7 @@ const Settings = (() => {
   let info = null, latest = null, timer = null, on = false, busyAct = '';
   const human = n => n >= 1e9 ? (n / 1073741824).toFixed(1) + 'GB' : n >= 1e6 ? (n / 1048576).toFixed(0) + 'MB' : (n / 1024).toFixed(0) + 'KB';
   async function load() {
-    try { info = await api.get('/api/app/info'); }
+    try { info = await api.get('/api/app/info'); info.unused = await api.get('/api/app/models/unused').catch(() => null); }
     catch (e) { body.innerHTML = `<div class="scard"><h3>설정은 PC에서만</h3><p class="hint">${esc(e.message)}</p></div>`; return; }
     paint();
     clearTimeout(timer);
@@ -523,6 +523,12 @@ const Settings = (() => {
       + (d.finished && d.failed && d.failed.length ? `<p class="warn">받지 못한 파일: ${d.failed.map(esc).join('<br>')}</p>` : '')
       + (d.error ? `<p class="warn">${esc(d.error)}</p><div class="row"><input id="civKey" type="password" placeholder="Civitai API 키 붙여넣기"><button class="btn" data-act="civkey">저장</button></div>
          <p class="hint">civitai.com 로그인 → 오른쪽 위 프로필 → Settings → API Keys → Add API key</p>` : '');
+    const un = info.unused;
+    const unusedHtml = un && un.files.length
+      ? `<details class="unused"><summary>안 쓰는 모델 파일 <b>${un.files.length}개</b> · ${human(un.bytes)} <span class="hint">(예전 모델·받다 만 파일)</span></summary>
+          <ul class="mlist">${un.files.map(f => `<li>${esc(f.path)} <span class="hint">${human(f.size)}${f.partial ? ' · 받다 만 파일' : ''}</span></li>`).join('')}</ul>
+          <div class="row"><button class="btn" data-act="unused-del">모두 지우기</button><span class="hint">지운 파일은 휴지통에 가지 않아요. 다시 쓰려면 다시 받아야 해요.</span></div></details>`
+      : '';
     const cs = {running: ['ok', '켜져 있음'], starting: ['', '켜는 중…'], updating: ['', '업데이트 중… (몇 분)'], stopped: ['bad', '꺼짐'],
                 missing: ['bad', '설치 안 됨'], error: ['bad', '문제 있음'], unknown: ['', '확인 중']}[c.alive ? 'running' : c.state] || ['', c.state];
     const comfy = `<p><i class="dot ${cs[0]}"></i> ${cs[1]}${c.message ? ` <span class="hint">${esc(c.message)}</span>` : ''}</p>
@@ -543,7 +549,7 @@ const Settings = (() => {
       <p class="hint">문제가 생기면 진단 정보를 복사해 대화창에 붙여넣어 주세요. 로그: ${esc(info.logs)}</p>`;
     body.innerHTML = [
       card('업데이트', (info.last_error ? `<p class="warn">지난 업데이트 실패: ${esc(info.last_error)}</p>` : '') + upd),
-      card('모델', models), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('문제 해결', help),
+      card('모델', models + unusedHtml), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('문제 해결', help),
     ].join('');
   }
   body.addEventListener('change', async e => {
@@ -558,6 +564,11 @@ const Settings = (() => {
     try {
       if (act === 'check') return checkUpdate();
       if (act === 'update') { const r = await api.post('/api/app/update'); toast(r.message, 15000); b.disabled = true; return; }
+      if (act === 'unused-del') {
+        if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = '정말 지울까요? 한 번 더 누르기'; return; }
+        const r = await api.post('/api/app/models/unused/delete', {paths: info.unused.files.map(f => f.path)});
+        toast(`${r.deleted}개를 지웠어요`); return load();
+      }
       if (act === 'dl') { await api.post('/api/app/models/download'); return load(); }
       if (act === 'dl-cancel') { await api.post('/api/app/models/cancel'); return load(); }
       if (act === 'civkey') { await api.post('/api/app/civitai-key', {key: $('#civKey').value}); toast('저장했어요. 모두 받기를 다시 누르세요.'); return load(); }

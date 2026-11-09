@@ -149,6 +149,21 @@ def register(app: FastAPI, state) -> None:
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    @app.get("/api/app/models/unused")
+    async def app_models_unused(request: Request):
+        local_only(request)
+        files = runtime.unused_model_files(state.registry, s.models_dir)
+        return {"files": files, "bytes": sum(f["size"] for f in files)}
+
+    @app.post("/api/app/models/unused/delete")
+    async def app_models_unused_delete(body: dict, request: Request):
+        local_only(request)
+        if state.engine._running:
+            raise HTTPException(409, "작업이 끝난 뒤에 지워 주세요")
+        allowed = runtime.unused_model_files(state.registry, s.models_dir)
+        n = runtime.delete_model_files(s.models_dir, list(body.get("paths") or []), allowed)
+        return {"deleted": n}
+
     @app.post("/api/app/models/cancel")
     async def app_models_cancel(request: Request):
         local_only(request)
