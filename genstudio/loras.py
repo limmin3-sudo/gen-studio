@@ -71,7 +71,7 @@ def sha256_file(path: Path) -> str:
 
 
 def parse_civitai_url(url: str) -> tuple[int | None, int | None]:
-    m = re.search(r"civitai\.com/models/(\d+)", url)
+    m = re.search(r"civitai\.(?:com|red|green)/models/(\d+)", url)   # .red = mature side of Civitai
     v = re.search(r"modelVersionId=(\d+)", url) or re.search(r"/api/download/models/(\d+)", url)
     return (int(m.group(1)) if m else None), (int(v.group(1)) if v else None)
 
@@ -195,7 +195,7 @@ class Loras:
             raise ValueError("ComfyUI 폴더가 설정되지 않았어요")
         mid, vid = parse_civitai_url(url)
         if not (mid or vid):
-            raise ValueError("Civitai 모델 주소를 붙여넣어 주세요 (civitai.com/models/...)")
+            raise ValueError("Civitai 모델 주소를 붙여넣어 주세요 (civitai.com/models/... 또는 civitai.red/models/...)")
         if vid:
             v = await self._civitai_json(f"https://civitai.com/api/v1/model-versions/{vid}")
         else:

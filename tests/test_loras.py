@@ -38,6 +38,7 @@ def test_family_detection(tmp_path):
     p.write_bytes(lora_bytes(["x"], {"ss_base_model_version": "sdxl_base_v1-0"}))
     assert guess_family_from_file(p)[0] == "illustrious"
     assert parse_civitai_url("https://civitai.com/models/1662740/lenovo?modelVersionId=2452071") == (1662740, 2452071)
+    assert parse_civitai_url("https://civitai.red/models/1662740/lenovo?modelVersionId=2452071") == (1662740, 2452071)
     assert apply_triggers("a woman", [{"triggers": ["l3n0v0"]}, {"triggers": ["a woman"]}]) == "l3n0v0, a woman"
 
 
