@@ -39,6 +39,7 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - Characters: build_character(name, image_id) turns ONE photo into a full character (face, full body, side
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
+- fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
   export it as png/webp to keep the transparency.
 - export_image writes a result into any folder (e.g. a project's assets) as webp/png/jpg with a size.
@@ -300,6 +301,19 @@ def build_mcp(state: "State") -> MCPServer:
                     "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
         return [{"image_id": image_id, "segments": _seg_list(image_id)},
                 MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+
+    @mcp.tool(description=(
+        "Fix small or blurry faces, eyes or hands: finds each one, redraws it enlarged and blends it back. "
+        "targets: face, eyes, hands (default face). strength 0.3 keeps the face, 0.5-0.6 changes more. "
+        "Use after full-body or group pictures."))
+    async def fix_details(image_id: str | None = None, image_path: str | None = None, targets: list[str] | None = None,
+                          strength: float = 0.4, prompt: str = "", wait_seconds: int = 90, include_image: bool = True):
+        from .detail import DetailRequest
+        if not image_id:
+            image_id = _bring_in(None, [image_path] if image_path else None)[0]
+        job = state.engine.submit_detail(DetailRequest(image_id=image_id, targets=targets or ["face"],
+                                                       strength=strength, prompt=prompt))
+        return await _finish(job, wait_seconds, include_image)
 
     @mcp.tool(description=(
         "Remove the background: keeps the main people/objects and makes everything else transparent. "

@@ -399,6 +399,7 @@ const Editor = (() => {
   const hasSel = () => painted || segSel.length > 0;
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
+  let detStrength = store.get('detStrength', 0.4);
   const STRENGTH = {low: [0.35, '약하게'], mid: [0.55, '보통'], high: [0.75, '강하게']};
   let editMode = store.get('editMode', 'instruction');     // instruction (Qwen) | redraw (same model)
   let expandAspect = '3:4', expandAnchor = 'top';
@@ -474,6 +475,10 @@ const Editor = (() => {
     h += `<label class="switch" style="margin:4px 0 16px"><input type="checkbox" id="autoFillToggle" ${autoFill ? 'checked' : ''}><span>삭제하면 묻지 않고 모델이 알아서 채우기</span></label>`;
     if (rec) {
       const model = MODELS.find(m => m.id === rec.model_id);
+      h += `<h2>디테일 보정</h2>
+        <p class="note">작게 나온 얼굴·눈·손을 찾아 크게 다시 그린 뒤 제자리에 붙입니다. 전신이나 여러 명 나온 사진에 좋아요. 아래 입력칸에 "미소", "푸른 눈"처럼 덧붙일 수 있어요.</p>
+        <div class="field"><div class="seg2"><button data-det="face">얼굴</button><button data-det="face,eyes">얼굴+눈</button><button data-det="hands">손</button><button data-det="face,eyes,hands">전부</button></div></div>
+        <div class="field"><span>세기</span><div class="seg2">${[[0.3, '약하게'], [0.4, '보통'], [0.55, '강하게']].map(([v, n]) => `<button data-dstr="${v}" aria-pressed="${v === detStrength}">${n}</button>`).join('')}</div></div>`;
       h += `<h2>배경 제거</h2>
         <p class="note">사람이나 물건만 남기고 배경을 지웁니다. 새 버전으로 저장되고, PNG로 받으면 투명하게 남아요.</p>
         <div class="field"><div class="seg2"><button data-bg="transparent">투명</button><button data-bg="white">흰색</button><button data-bg="gray">회색</button><button data-bg="black">검정</button></div></div>`;
@@ -512,6 +517,13 @@ const Editor = (() => {
     const asp = e.target.closest('[data-asp]'); if (asp) { expandAspect = asp.dataset.asp; paintPane(); }
     const anc = e.target.closest('[data-anc]'); if (anc) { expandAnchor = anc.dataset.anc; paintPane(); }
     if (e.target.closest('#doExpand')) submitEdit({mode: 'outpaint', aspect: expandAspect, anchor: expandAnchor, prompt: promptEl.value.trim()});
+    const ds = e.target.closest('[data-dstr]'); if (ds) { detStrength = +ds.dataset.dstr; store.set('detStrength', detStrength); paintPane(); return; }
+    const det = e.target.closest('[data-det]');
+    if (det && rec && !busy) {
+      api.post(`/api/images/${rec.id}/detail`, {targets: det.dataset.det.split(','), strength: detStrength, prompt: promptEl.value.trim()})
+        .then(j => runJob(j, `${j.decision.action} · ${j.decision.model_name}`)).catch(err => toast(err.message, 6000));
+      return;
+    }
     const bgb = e.target.closest('[data-bg]');
     if (bgb && rec && !busy) {
       api.post(`/api/images/${rec.id}/remove-background`, {background: bgb.dataset.bg})

@@ -593,6 +593,88 @@ class Engine:
         char = self.characters.save(req.name, [src["id"], *job.result_ids], description, aliases=req.aliases)
         job.result = {"character": char}
 
+    # ------------------------------------------------------------ detail pass
+    def _detail_model(self, src: dict, requested: str):
+        if requested and requested != "auto":
+            m = self.registry.get(requested)
+            if m.family.encoder == "qwen21" or m.family.high_noise:
+                raise ValueError(f"{m.name}은(는) 디테일 보정에 쓰지 않아요. Z-Image나 Illustrious를 고르세요.")
+            return m
+        m, _why = router.model_for_edit(self.registry, src.get("model_id"), self.settings.models_dir,
+                                        self.settings.default_style)
+        if m.family.encoder == "qwen21" or m.family.high_noise:   # Qwen / Wan pictures: redraw with the style model
+            style = "semi" if src.get("style") == "semi" else "realistic"
+            m = router.pick_model(self.registry, style, self.settings.models_dir, [])
+        return m
+
+    def submit_detail(self, req) -> Job:
+        from . import detail as D
+        src = self.library.get(req.image_id)
+        if not src:
+            raise KeyError("이미지를 찾을 수 없어요")
+        if not self.registry.tool_ready("sam3", self.settings.models_dir):
+            raise ValueError("세그먼트 모델(SAM 3.1)이 없어요. update.bat을 실행해 받아 주세요.")
+        targets = list(dict.fromkeys(req.targets)) or ["face"]
+        m = self._detail_model(src, req.model)
+        names = ", ".join(D.TARGETS[t][3] for t in targets)
+        job = Job(id=uuid.uuid4().hex[:12], kind="detail", request={**req.model_dump(), "targets": targets},
+                  decision={"action": f"디테일 보정 ({names})", "model_id": m.id, "model_name": m.name,
+                            "family": m.family.id})
+        return self._enqueue(job)
+
+    async def _run_detail(self, job: Job) -> None:
+        from . import detail as D
+        req = D.DetailRequest(**job.request)
+        src = self.library.get(req.image_id)
+        path = self.library.path(req.image_id)
+        if not src or not path:
+            raise ComfyError("이미지가 사라졌어요")
+        model = self.registry.get(job.decision["model_id"])
+        with Image.open(path) as im:
+            base = im.convert("RGB")
+        name = await self.comfy.upload_image(D.png(base), f"{src['id']}-detail.png")
+        job.message = "얼굴·손 찾는 중"
+        graph, saves = workflows.segment_labels(name, self.registry.tool_file("sam3"),
+                                                [D.TARGETS[t][0] for t in req.targets])
+        outputs = await self.comfy.run_outputs(graph, self._progress(job, 0, 0.15))
+        found: list[tuple[str, Image.Image]] = []
+        for nid, d in iter_images(outputs):
+            if nid in saves:
+                found.append((req.targets[saves[nid]], D.load_mask(
+                    await self.comfy.view(d["filename"], d.get("subfolder", "")), base.size)))
+        plan = []
+        for t in req.targets:
+            boxes = [(m, D.crop_box(m, D.TARGETS[t][1])) for tt, m in found if tt == t]
+            boxes = sorted([(m, b) for m, b in boxes if b], key=lambda x: -(x[1][2] - x[1][0]) * (x[1][3] - x[1][1]))
+            plan += [(t, m, b) for m, b in boxes[: D.MAX_PER_TARGET]]
+        if not plan:
+            raise ComfyError(f"{', '.join(D.TARGETS[t][3] for t in req.targets)}을(를) 찾지 못했어요")
+        extra = await self._maybe_translate(job, req.prompt.strip(), model.family.id, None) if req.prompt.strip() else ""
+        await self._switch_family(model.family.id)
+        n = len(plan)
+        for i, (t, mask, box) in enumerate(plan):
+            job.message = f"{D.TARGETS[t][3]} 다시 그리는 중 ({i + 1}/{n})"
+            crop = base.crop(box)
+            mcrop = mask.crop(box)
+            ww, wh = D.work_size(*crop.size)
+            img_name = await self.comfy.upload_image(D.png(crop.resize((ww, wh), Image.LANCZOS)), f"{src['id']}-d{i}.png")
+            m_name = await self.comfy.upload_image(D.png(mcrop.resize((ww, wh), Image.LANCZOS)), f"{src['id']}-d{i}-m.png")
+            graph, _ = workflows.inpaint(model, img_name, m_name, D.prompt_for(t, model.family.id, extra), "",
+                                         random.randint(0, 2**31 - 1), denoise=req.strength, grow=8,
+                                         models_dir=self.settings.models_dir, prefix="gen-studio/detail")
+            outs = await self.comfy.run(graph, self._progress(job, 0.15 + 0.85 * i / n, 0.85 / n))
+            base = D.paste_back(base, await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", "")),
+                                box, mcrop)
+        names = ", ".join(dict.fromkeys(D.TARGETS[t][3] for t, _m, _b in plan))
+        rec = self.library.add(D.png(base), {
+            "kind": "edit", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
+            "model_id": model.id, "family": model.family.id, "style": src.get("style"),
+            "label": f"디테일 보정 ({names})", "edit_prompt": req.prompt,
+            "edit": {"mode": "detail", "targets": req.targets, "strength": req.strength, "count": n},
+        })
+        job.result_ids.append(rec["id"])
+        job.result = {"fixed": [{"target": t, "box": list(b)} for t, _m, b in plan]}
+
     # ------------------------------------------------------------ LoRA training
     def submit_train(self, req) -> Job:
         from . import training as T
@@ -789,6 +871,8 @@ class Engine:
                     await self._run_character(job)
                 elif job.kind == "train":
                     await self._run_train(job)
+                elif job.kind == "detail":
+                    await self._run_detail(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -1084,6 +1168,11 @@ class Engine:
             edit = rec.get("edit") or {}
             if edit.get("mode") == "character_sheet":
                 raise ValueError("캐릭터 사진은 캐릭터 만들기로 다시 만들어 주세요")
+            if edit.get("mode") == "detail":
+                from .detail import DetailRequest
+                return self.submit_detail(DetailRequest(image_id=rec["parent_id"], targets=edit.get("targets") or ["face"],
+                                                        strength=edit.get("strength") or 0.4,
+                                                        prompt=rec.get("edit_prompt") or ""))
             if edit.get("mode") == "cutout":
                 return self.submit_cutout(CutoutRequest(image_id=rec["parent_id"],
                                                         background=edit.get("background") or "transparent"))

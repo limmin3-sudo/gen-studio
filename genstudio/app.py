@@ -227,6 +227,18 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
 
+    @app.post("/api/images/{image_id}/detail")
+    async def detail(image_id: str, body: dict | None = None):
+        from .detail import DetailRequest
+        body = body or {}
+        try:
+            return engine.submit_detail(DetailRequest(image_id=image_id, **{k: v for k, v in body.items()
+                                                                           if k in ("targets", "strength", "prompt", "model")})).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     @app.post("/api/images/{image_id}/remove-background")
     async def remove_background(image_id: str, body: dict | None = None):
         body = body or {}

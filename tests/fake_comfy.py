@@ -65,7 +65,9 @@ class FakeComfy:
             table = {"woman": [(w * .3, h * .1, w * .7, h * .95)], "blonde hair": [(w * .4, h * .1, w * .6, h * .25)],
                      "white collared shirt": [(w * .35, h * .3, w * .65, h * .55)],
                      "epaulets": [(w * .36, h * .3, w * .44, h * .33), (w * .56, h * .3, w * .64, h * .33)],
-                     "background": [(0, 0, w, h * .08)], "person": [(w * .3, h * .1, w * .7, h * .95)]}
+                     "background": [(0, 0, w, h * .08)], "person": [(w * .3, h * .1, w * .7, h * .95)],
+                     "face": [(w * .45, h * .12, w * .55, h * .2)],
+                     "hand": [(w * .3, h * .5, w * .34, h * .54), (w * .66, h * .5, w * .7, h * .54), (0, 0, 2, 2)]}
             boxes = table.get(label, [])
         out = []
         for b in boxes or [None]:

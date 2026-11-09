@@ -63,7 +63,7 @@ def test_labels_points_and_fallback(client, fake):
     client.app.state.gs.engine.vlm_file = lambda: None      # no Qwen installed -> built-in word list
     img2 = imported(client, 300, 600)
     segs = segment(client, img2)
-    assert [s["label"] for s in segs] == ["person", "background"]
+    assert {s["label"] for s in segs} == {"person", "face", "background"}
 
 
 def test_edit_by_segment_and_delete_by_number(client, fake):

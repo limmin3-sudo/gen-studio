@@ -266,3 +266,31 @@ def test_system_info(client):
     s = client.get("/api/system").json()
     assert s["comfyui"] is True and s["queue"] == {"waiting": 0, "running": None}
     assert s["ram_total"] > 0 and "cpu" in s
+
+
+def test_detail_pass_redraws_faces_and_hands_enlarged(client, fake):
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "full body photo of a woman", "aspect": "tall"}).json()["id"])
+    img = j["result_ids"][0]                                   # 768x1344
+    d = wait_job(client, client.post(f"/api/images/{img}/detail", json={"targets": ["face", "hands"]}).json()["id"])
+    assert d["status"] == "done", d["error"]
+    fixed = d["result"]["fixed"]
+    assert [f["target"] for f in fixed] == ["face", "hands", "hands"]          # the 2px speck is ignored
+    face_box = fixed[0]["box"]
+    assert face_box[2] - face_box[0] < 260                                       # a small crop ...
+    inp = [g for g in list(fake.prompts.values())[-3:]]
+    loads = [n for g in inp for n in g.values() if n["class_type"] == "LoadImage"]
+    from PIL import Image as I
+    with I.open(io.BytesIO(fake.uploads[loads[0]["inputs"]["image"]])) as im:
+        assert max(im.size) >= 1000                                              # ... redrawn at ~1024
+    ks = next(n for n in inp[0].values() if n["class_type"] == "KSampler")
+    assert ks["inputs"]["denoise"] == 0.4
+    text = next(n["inputs"]["text"] for n in inp[0].values() if n["class_type"] == "CLIPTextEncode")
+    assert "detailed face" in text
+    rec = client.get(f"/api/images/{d['result_ids'][0]}").json()
+    assert rec["label"] == "디테일 보정 (얼굴, 손)" and rec["parent_id"] == img and (rec["width"], rec["height"]) == (768, 1344)
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert r["status"] == "done"
+    # nothing found -> clear message
+    imp = client.post("/api/import", files={"file": ("a.png", io.BytesIO(base64.b64decode(mask_png(256, 256, (0, 0, 8, 8)))), "image/png")}).json()
+    e = wait_job(client, client.post(f"/api/images/{imp['id']}/detail", json={"targets": ["eyes"]}).json()["id"])
+    assert e["status"] == "error" and "눈" in e["error"]
