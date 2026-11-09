@@ -70,6 +70,20 @@ def tailscale_url(port: int, enable: bool) -> str | None:
     return f"https://{name}"
 
 
+def already_running(port: int) -> bool:
+    try:
+        r = httpx.get(f"http://127.0.0.1:{port}/api/status", timeout=2)
+        return r.status_code == 200 and "version" in r.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
+def port_busy(port: int) -> bool:
+    import socket
+    with socket.socket() as sock:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="genstudio")
     ap.add_argument("--no-browser", action="store_true")
@@ -85,6 +99,16 @@ def main() -> None:
         s.remote_access = True
 
     print("\n  Gen Studio")
+    if already_running(s.port):
+        print(f"\n  Gen Studio가 이미 켜져 있어요. 브라우저로 엽니다: http://127.0.0.1:{s.port}")
+        print("  원격 접속(start-remote)으로 다시 켜려면, 켜져 있는 Gen Studio 창을 먼저 닫으세요.\n")
+        if not args.no_browser:
+            webbrowser.open(f"http://127.0.0.1:{s.port}")
+        return
+    if port_busy(s.port):
+        print(f"\n  {s.port}번 포트를 다른 프로그램이 쓰고 있어요. 그 프로그램을 끄거나,")
+        print("  config/settings.yaml 의 server.port 를 다른 번호(예: 7870)로 바꾼 뒤 다시 실행하세요.\n")
+        sys.exit(1)
     if not args.no_comfy:
         ensure_comfy(s)
     local = f"http://127.0.0.1:{s.port}"
