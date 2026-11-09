@@ -34,7 +34,7 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   fill="clear" deletes and blends with the surroundings. points=[{x,y}] selects whatever is at a pixel.
 - open_editor(image_id) shows a clickable segment editor inside the chat when the host supports MCP Apps
   (ChatGPT, Claude; other hosts get the overview and a link). Prefer it when the user wants to pick parts by hand.
-- LoRAs: list_loras / add_lora; pass loras=[{"name": ..., "strength": 0.8}] and the matching model is chosen,
+- LoRAs: list_loras / add_lora / train_lora (learn a person or look from a few pictures); pass loras=[{"name": ..., "strength": 0.8}] and the matching model is chosen,
   trigger words are added automatically.
 - Characters: build_character(name, image_id) turns ONE photo into a full character (face, full body, side
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
@@ -356,6 +356,21 @@ def build_mcp(state: "State") -> MCPServer:
         return {"loras": [{"name": x["name"], "id": x["id"], "family": x.get("family"), "family_name": x["family_name"],
                            "triggers": x.get("triggers"), "strength": x.get("strength"), "present": x["present"],
                            "note": x.get("note")} for x in state.engine.loras.list()]}
+
+    @mcp.tool(description=(
+        "Train a LoRA on this PC from 3-60 pictures (image ids/paths, or a saved character's pictures). "
+        "kind='character' learns a person, 'style' learns a look. family auto/illustrious(semi)/zimage(realistic). "
+        "Takes 20-60 minutes; returns a job_id to poll with get_job_status. The finished LoRA appears in list_loras "
+        "with its trigger word and is used with loras=[{name}]."))
+    async def train_lora(name: str, image_ids: list[str] | None = None, image_paths: list[str] | None = None,
+                         character: str | None = None, kind: str = "character", family: str = "auto",
+                         trigger: str | None = None, steps: int | None = None, rank: int = 16):
+        from .training import TrainRequest
+        ids = _bring_in(image_ids, image_paths)
+        job = state.engine.submit_train(TrainRequest(name=name, image_ids=ids, character=character, kind=kind,
+                                                     family=family, trigger=trigger, steps=steps, rank=rank))
+        return {"job_id": job.id, "status": job.status, "decision": job.decision,
+                "next": "학습은 오래 걸려요. get_job_status(job_id)로 가끔 확인하세요."}
 
     @mcp.tool(description=(
         "Add a LoRA from a Civitai page URL (downloads in the background) or from a .safetensors path on this PC."))

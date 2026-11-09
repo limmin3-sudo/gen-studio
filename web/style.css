@@ -230,3 +230,15 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
   .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* LoRA training */
+.train{margin:0 0 16px;padding:12px 14px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.train summary{cursor:pointer;font-weight:600;font-size:14px}
+.train summary .hint{font-weight:400;margin-left:6px}
+.trow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.trow input,.trow select{height:34px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 10px;font:inherit;font-size:13.5px;min-width:0}
+.trow input{flex:1 1 200px}
+.tpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px;max-height:260px;overflow:auto}
+.tpick button{position:relative;aspect-ratio:3/4;border:2px solid transparent;border-radius:9px;padding:0;background:var(--chip) center/cover no-repeat;cursor:pointer}
+.tpick button[aria-pressed=true]{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.tpick button[aria-pressed=true]::after{content:"✓";position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;line-height:18px;text-align:center}

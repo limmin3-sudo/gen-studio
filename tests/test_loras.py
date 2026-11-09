@@ -1,7 +1,10 @@
 """LoRA library: detection, Civitai download, applying to generations."""
 import hashlib
 import json
+import io
 import struct
+
+from PIL import Image
 
 import httpx
 import pytest
@@ -108,3 +111,39 @@ def test_civitai_download_and_mcp(client, lora_env):
     added = client.post("/api/loras/scan").json()["added"]
     assert [a["file"] for a in added] == ["stray.safetensors"]
     assert client.patch("/api/loras/stray", json={"triggers": ["str4y"], "strength": 0.6}).json()["triggers"] == ["str4y"]
+
+
+def test_train_lora_from_pictures(client, fake, tmp_path):
+    from test_api import mask_png
+    eng = client.app.state.gs.engine
+    eng.loras.dir = tmp_path / "loras"
+    ids = []
+    for _ in range(4):
+        j = wait_job(client, client.post("/api/generate", json={"prompt": "반실사 여자", "aspect": "portrait"}).json()["id"])
+        ids.append(j["result_ids"][0])
+    assert client.post("/api/loras/train", json={"name": "x", "image_ids": ids[:2]}).status_code == 400
+    t = client.post("/api/loras/train", json={"name": "Flight Director", "image_ids": ids}).json()
+    d = t["decision"]
+    assert d["family"] == "illustrious" and d["trigger"] == "gs_flightdirector" and d["steps"] == 600
+    t = wait_job(client, t["id"])
+    assert t["status"] == "done", t["error"]
+    # captions: trigger first, then Qwen3-VL tags; images resized to a training bucket
+    up = {k: v for k, v in fake.uploads.items() if "gen-studio-train/" in k}
+    txts = sorted(k for k in up if k.endswith(".txt"))
+    assert len(txts) == 4 and up[txts[0]].decode().startswith("gs_flightdirector, 1girl")
+    pngs = sorted(k for k in up if k.endswith(".png"))
+    with Image.open(io.BytesIO(up[pngs[0]])) as im:
+        assert im.size == (832, 1216)
+    graph = list(fake.prompts.values())[-1]
+    tr = next(n for n in graph.values() if n["class_type"] == "TrainLoraNode")["inputs"]
+    assert tr["steps"] == 600 and tr["bucket_mode"] is True and tr["rank"] == 16
+    ds = next(n for n in graph.values() if n["class_type"] == "LoadImageTextDataSetFromFolder")["inputs"]
+    assert ds["folder"].startswith("gen-studio-train/flight-director-")
+    assert fake.views[-1]["subfolder"] == "loras/gen-studio" and fake.views[-1]["filename"].endswith("_600_steps_00001_.safetensors")
+    # registered and usable right away
+    lo = t["result"]["lora"]
+    assert lo["family"] == "illustrious" and lo["triggers"] == ["gs_flightdirector"]
+    assert (eng.loras.dir / lo["file"]).read_bytes() == b"trained-lora"
+    g = client.post("/api/generate", json={"prompt": "사무실", "loras": [{"name": "Flight Director"}]}).json()
+    assert g["decision"]["model_id"] == "realism-illustrious"
+    assert client.post("/api/loras/train", json={"name": "Flight Director", "image_ids": ids}).status_code == 400

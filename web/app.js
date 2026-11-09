@@ -290,6 +290,50 @@ const LoraPage = (() => {
     if (f === 'strength') v = +v;
     try { await req('PATCH', `/api/loras/${card.dataset.id}`, {[f]: v || null}); show(); } catch (err) { toast(err.message); }
   });
+  /* ---- training */
+  let trSel = new Set(), trChars = [], trLoaded = false;
+  async function loadTrain() {
+    if (trLoaded) return; trLoaded = true;
+    try {
+      const [imgs, chars] = await Promise.all([api.get('/api/images?limit=120'), api.get('/api/characters')]);
+      trChars = chars;
+      $('#trChar').innerHTML = '<option value="">캐릭터 사진 쓰기: 없음</option>' + chars.map(c => `<option value="${esc(c.id)}">캐릭터 '${esc(c.name)}' 사진 ${c.ref_ids.length}장 포함</option>`).join('');
+      $('#trPick').innerHTML = imgs.map(r => `<button type="button" data-tr="${esc(r.id)}" aria-pressed="false" title="${esc(r.label || '')}" style="background-image:url('${thumbUrl(r.id)}')"></button>`).join('') || '<span class="hint">갤러리에 이미지가 없어요</span>';
+    } catch (e) { toast(e.message); trLoaded = false; }
+  }
+  function trCount() {
+    const c = trChars.find(x => x.id === $('#trChar').value);
+    $('#trCount').textContent = new Set([...trSel, ...(c ? c.ref_ids : [])]).size;
+  }
+  $('#trainBox').addEventListener('toggle', () => { if ($('#trainBox').open) loadTrain(); });
+  $('#trPick').addEventListener('click', e => {
+    const b = e.target.closest('[data-tr]'); if (!b) return;
+    const on = !trSel.has(b.dataset.tr); on ? trSel.add(b.dataset.tr) : trSel.delete(b.dataset.tr);
+    b.setAttribute('aria-pressed', on); trCount();
+  });
+  $('#trChar').onchange = trCount;
+  async function watchTrain(id) {
+    store.set('trainJob', id);
+    try {
+      const j = await pollJob(id, x => { $('#trStatus').textContent = `${x.status === 'queued' ? '대기 중' : x.message} · ${Math.round(x.progress * 100)}%`; });
+      store.set('trainJob', '');
+      if (j.status === 'done') { $('#trStatus').textContent = `완료: '${j.result.lora.name}' (트리거 ${j.decision.trigger})`; toast('LoRA 학습이 끝났어요. 생성 화면의 + LoRA에서 고르세요.', 6000); show(); }
+      else $('#trStatus').textContent = j.status === 'error' ? `실패: ${j.error}` : '취소했어요';
+    } catch { store.set('trainJob', ''); }
+  }
+  $('#trStart').onclick = async () => {
+    const name = $('#trName').value.trim();
+    if (!name) { $('#trName').focus(); toast('LoRA 이름을 적어 주세요'); return; }
+    try {
+      const j = await api.post('/api/loras/train', {name, image_ids: [...trSel], character: $('#trChar').value || null,
+                                                    kind: $('#trKind').value, family: $('#trFam').value});
+      toast(`학습을 시작했어요: ${j.decision.reasons.join(' · ')}`, 6000);
+      watchTrain(j.id);
+    } catch (e) { toast(e.message, 6000); }
+  };
+  const resumeTrain = store.get('trainJob', '');
+  if (resumeTrain) { $('#trainBox').open = true; watchTrain(resumeTrain); }
+
   let delArm = '';
   $('#loraGrid').addEventListener('click', async e => {
     if (!e.target.closest('[data-del]')) return;

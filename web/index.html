@@ -120,6 +120,18 @@
         <button class="btn primary" id="loraAdd">받기</button>
       </div>
       <p class="hint" style="margin:0 0 14px">LoRA는 학습한 모델 계열에서만 동작해요. 계열은 Civitai 정보나 파일 내용을 보고 자동으로 정합니다. 생성 화면의 <b>+ LoRA</b>로 골라 쓰세요.</p>
+      <details class="train" id="trainBox">
+        <summary>새 LoRA 학습하기 <span class="hint">사진 3장 이상 → 이 PC에서 직접 학습 (20~60분)</span></summary>
+        <div class="trow">
+          <input id="trName" placeholder="LoRA 이름 (예: 플라이트 디렉터)">
+          <select id="trKind"><option value="character">사람 (얼굴·체형을 배움)</option><option value="style">그림체 (분위기·화풍을 배움)</option></select>
+          <select id="trFam"><option value="auto">모델 자동</option><option value="illustrious">반실사 (Illustrious)</option><option value="zimage">실사 (Z-Image)</option></select>
+          <select id="trChar"><option value="">캐릭터 사진 쓰기: 없음</option></select>
+        </div>
+        <p class="hint" style="margin:8px 0">아래에서 학습할 사진을 눌러 고르세요 (<b id="trCount">0</b>장). 같은 사람을 여러 각도·옷·배경으로 담은 사진 10~20장이 가장 좋아요. 학습 중에는 다른 생성이 뒤에서 기다립니다.</p>
+        <div class="tpick" id="trPick"></div>
+        <div class="trow" style="margin-top:10px"><button class="btn primary" id="trStart">학습 시작</button><span class="hint" id="trStatus"></span></div>
+      </details>
       <div id="loraDl"></div>
       <div class="lgrid" id="loraGrid"></div>
     </section>

@@ -16,6 +16,7 @@ class FakeComfy:
         self.prompts: dict[str, dict] = {}
         self.uploads: dict[str, bytes] = {}
         self.freed = 0
+        self.views: list[dict] = []
         self.fail_with = fail_with
 
     def transport(self) -> httpx.MockTransport:
@@ -106,8 +107,10 @@ class FakeComfy:
             part = next(p for p in request.content.split(b"--" + boundary) if b'filename="' in p)
             name = part.split(b'filename="', 1)[1].split(b'"', 1)[0].decode()
             data = part.split(b"\r\n\r\n", 1)[1].removesuffix(b"\r\n")
-            self.uploads[f"gen-studio/{name}"] = data
-            return httpx.Response(200, json={"name": name, "subfolder": "gen-studio", "type": "input"})
+            sub = next((p.split(b"\r\n\r\n", 1)[1].strip().decode() for p in request.content.split(b"--" + boundary)
+                        if b'name="subfolder"' in p), "gen-studio")
+            self.uploads[f"{sub}/{name}"] = data
+            return httpx.Response(200, json={"name": name, "subfolder": sub, "type": "input"})
         if path == "/prompt" and request.method == "POST":
             graph = json.loads(request.content)["prompt"]
             for nid, node in graph.items():
@@ -137,6 +140,9 @@ class FakeComfy:
                              else self.translate_reply(gen["prompt"]))
                     outputs[nid] = {"text": [reply]}
             return httpx.Response(200, json={pid: {"outputs": outputs, "status": {"status_str": "success", "completed": True}}})
+        if path == "/view" and request.url.params["filename"].endswith(".safetensors"):
+            self.views.append(dict(request.url.params))
+            return httpx.Response(200, content=b"trained-lora")
         if path == "/view":
             pid, nid, j = request.url.params["filename"].removesuffix(".png").rsplit("_", 2)
             graph = self.prompts[pid]

@@ -14,6 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import __version__, router
 from .comfy import ComfyClient
 from .config import ROOT, Settings, access_token, load_settings
+from .training import TrainRequest
 from .jobs import CharacterBuildRequest, CutoutRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
@@ -93,6 +94,11 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         report["comfyui"] = True
         info = await comfy.object_info()
         report["missing_nodes"] = [n for n in REQUIRED_NODES if n not in info]
+        # newer features: need a recent ComfyUI (update\\update_comfyui.bat)
+        from .training import TRAIN_NODES
+        report["missing_optional"] = {k: [n for n in v if n not in info] for k, v in {
+            "배경 제거": ["LoadBackgroundRemovalModel", "RemoveBackground"], "LoRA 학습": TRAIN_NODES}.items()
+            if any(n not in info for n in v)}
         return report
 
     # ------------------------------------------------------------ generation
@@ -284,6 +290,15 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
     async def loras_upload(file: UploadFile = File(...)):
         try:
             return await engine.loras.add_file(file.filename or "lora.safetensors", await file.read())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/loras/train")
+    async def loras_train(req: TrainRequest):
+        try:
+            return engine.submit_train(req).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
         except ValueError as e:
             raise HTTPException(400, str(e))
 

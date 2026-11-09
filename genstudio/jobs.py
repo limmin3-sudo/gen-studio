@@ -593,6 +593,99 @@ class Engine:
         char = self.characters.save(req.name, [src["id"], *job.result_ids], description, aliases=req.aliases)
         job.result = {"character": char}
 
+    # ------------------------------------------------------------ LoRA training
+    def submit_train(self, req) -> Job:
+        from . import training as T
+        ids = list(req.image_ids)
+        if req.character:
+            ch = self.characters.get(req.character)
+            if not ch:
+                raise KeyError(f"캐릭터를 찾을 수 없어요: {req.character}")
+            ids = list(dict.fromkeys([*ch["ref_ids"], *ids]))
+        missing = [i for i in ids if not self.library.get(i)]
+        if missing:
+            raise KeyError(f"이미지를 찾을 수 없어요: {', '.join(missing)}")
+        if not T.MIN_IMAGES <= len(ids) <= T.MAX_IMAGES:
+            raise ValueError(f"학습 이미지는 {T.MIN_IMAGES}~{T.MAX_IMAGES}장이 필요해요 (지금 {len(ids)}장)")
+        fam = req.family
+        if fam == "auto":
+            fams = [self.library.get(i).get("family") for i in ids]
+            counts = {f: fams.count(f) for f in T.TRAINABLE}
+            fam = max(counts, key=lambda f: (counts[f], f == "zimage"))
+        cands = [m for m in self.registry.models if m.family.id == fam and m.installed(self.settings.models_dir) is not False]
+        if not cands:
+            raise ValueError(f"{T.TRAINABLE[fam]['name']} 모델이 설치돼 있지 않아요")
+        model = sorted(cands, key=lambda m: m.role != "main")[0]
+        if self.loras.get(req.name):
+            raise ValueError(f"이미 같은 이름의 LoRA가 있어요: {req.name}")
+        if not self.loras.dir:
+            raise ValueError("LoRA를 저장할 ComfyUI 폴더를 몰라요. config/settings.yaml의 comfyui path를 확인하세요.")
+        trigger = (req.trigger or T.make_trigger(req.name)).strip()
+        steps = req.steps or T.default_steps(fam, len(ids))
+        decision = {"action": "LoRA 학습", "model_id": model.id, "model_name": model.name, "family": fam,
+                    "images": len(ids), "steps": steps, "rank": req.rank, "trigger": trigger,
+                    "learning_rate": req.learning_rate or T.TRAINABLE[fam]["lr"], "image_ids": ids,
+                    "reasons": [f"{T.TRAINABLE[fam]['name']}용", f"사진 {len(ids)}장 · {steps}스텝",
+                                f"트리거 단어 '{trigger}'"]}
+        job = Job(id=uuid.uuid4().hex[:12], kind="train", request=req.model_dump(), decision=decision)
+        return self._enqueue(job)
+
+    async def _run_train(self, job: Job) -> None:
+        from . import training as T
+        from . import translate as tr
+        req = T.TrainRequest(**job.request)
+        d = job.decision
+        model = self.registry.get(d["model_id"])
+        tag = f"{re.sub(r'[^a-z0-9]+', '-', req.name.lower()).strip('-') or 'lora'}-{job.id[:6]}"
+        folder = f"gen-studio-train/{tag}"
+        vlm = self.vlm_file()
+        n = len(d["image_ids"])
+        captions = []
+        for i, iid in enumerate(d["image_ids"], 1):
+            job.message = f"학습 사진 준비 {i}/{n}"
+            job.progress = 0.1 * i / n
+            png = T.prepare_image(self.library.path(iid).read_bytes())
+            name = await self.comfy.upload_image(png, f"{i:04d}.png", subfolder=folder)
+            cap = ""
+            if vlm:
+                try:
+                    cap = tr.clean(output_text(await self.comfy.run_outputs(workflows.describe_objects(
+                        name, vlm, T.caption_instruction(req.kind, d["family"], d["trigger"]), max_length=160))), "")
+                except ComfyError:
+                    cap = ""
+            text = ", ".join(x for x in (d["trigger"], cap) if x)
+            captions.append(text)
+            await self.comfy.upload_image(text.encode("utf-8"), f"{i:04d}.txt", subfolder=folder)
+        await self._switch_family(model.family.id)
+        job.message = "학습 중 (몇십 분 걸려요)"
+        prefix = f"loras/gen-studio/{tag}"
+        graph = T.train_graph(model, folder, d["steps"], d["rank"], d["learning_rate"], random.randint(0, 2**31 - 1),
+                              prefix, models_dir=self.settings.models_dir)
+
+        async def prog(p, msg):
+            job.progress = 0.1 + 0.88 * p
+            job.message = f"학습 중 {msg.split()[-1]}" if msg and "/" in msg else "학습 중"
+        try:
+            await self.comfy.run_outputs(graph, prog, timeout=6 * 3600)
+        except ComfyError as e:
+            if any(x in str(e) for x in T.TRAIN_NODES):
+                raise ComfyError("ComfyUI가 오래돼서 학습 노드가 없어요. ComfyUI_windows_portable\\update\\"
+                                 "update_comfyui.bat 을 실행한 뒤 다시 켜 주세요.") from e
+            if "out of memory" in str(e).lower():
+                raise ComfyError("그래픽 메모리가 부족해요. rank를 8로 낮추거나 다른 프로그램을 닫고 다시 해 보세요.") from e
+            raise
+        await self.comfy.free()
+        self._last_family = None
+        data = await self.comfy.view(f"{tag}_{d['steps']}_steps_00001_.safetensors", "loras/gen-studio")
+        if not self.loras.dir:
+            raise ComfyError("LoRA 폴더를 몰라요 (ComfyUI 경로 설정 확인)")
+        self.loras.dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{tag}.safetensors"
+        (self.loras.dir / fname).write_bytes(data)
+        item = self.loras.upsert(fname, name=req.name, family=d["family"], triggers=[d["trigger"]], strength=0.9,
+                                 note=f"Gen Studio에서 학습 · 사진 {n}장 · {d['steps']}스텝")
+        job.result = {"lora": item, "captions": captions}
+
     def submit_cutout(self, req: CutoutRequest) -> Job:
         if not self.library.get(req.image_id):
             raise KeyError("이미지를 찾을 수 없어요")
@@ -694,6 +787,8 @@ class Engine:
                     await self._run_cutout(job)
                 elif job.kind == "character":
                     await self._run_character(job)
+                elif job.kind == "train":
+                    await self._run_train(job)
                 else:
                     await self._run_edit(job)
                 job.status, job.progress, job.message = "done", 1.0, "완료"
