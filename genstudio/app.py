@@ -448,6 +448,22 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
     async def value_error(_req, exc: ValueError):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
+    async def index_page():
+        from fastapi.responses import HTMLResponse
+        v = str(int(max((WEB_DIR / f).stat().st_mtime for f in ("app.js", "style.css", "index.html"))))
+        return HTMLResponse((WEB_DIR / "index.html").read_text(encoding="utf-8").replace("__V__", v),
+                            headers={"Cache-Control": "no-cache"})
+
+    @app.middleware("http")
+    async def no_stale_ui(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith((".js", ".css", ".html")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     if WEB_DIR.exists():
         app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     return app

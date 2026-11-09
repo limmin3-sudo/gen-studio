@@ -458,3 +458,13 @@ def test_change_pose(client, fake):
     assert rec["label"] == "자세 바꾸기" and rec["parent_id"] == img
     again = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
     assert again["status"] == "done"
+
+
+def test_ui_is_never_served_stale(client):
+    import re
+    r = client.get("/")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+    m = re.search(r'<script src="app\.js\?v=(\d+)"></script>', r.text)
+    assert m and "__V__" not in r.text and 'style.css?v=' in r.text
+    js = client.get(f"/app.js?v={m.group(1)}")
+    assert js.status_code == 200 and js.headers["cache-control"] == "no-cache" and "edEnhance" in js.text
