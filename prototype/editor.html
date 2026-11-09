@@ -108,6 +108,17 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .row .lbl b{font-weight:500;font-size:15px}
 .row .lbl small{font-size:12px;color:var(--muted)}
 .row .chev{transition:transform .15s}
+.segs li{position:relative}
+.del{position:absolute;right:10px;top:31px;transform:translateY(-50%);width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:var(--muted);background:var(--surface);box-shadow:var(--shadow);opacity:0;transition:opacity .12s}
+.del.k{right:48px}
+.del svg.i{width:17px;height:17px}
+.segs li:hover>.del,.del:focus-visible,.row.on~.del{opacity:1}
+.del:hover{color:#d23f50}
+@media (hover:none){.del{opacity:1}}
+.ask{display:grid;gap:10px;width:100%;padding:12px 14px;border-radius:14px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow)}
+.ask b{font-weight:500;font-size:14.5px}
+.ask .opts{display:flex;flex-wrap:wrap;gap:6px}
+.pill.plain{background:var(--accent-soft);color:var(--accent);cursor:pointer}
 .row[aria-expanded="false"] .chev{transform:rotate(180deg)}
 .note{font-size:13.5px;line-height:1.6;color:var(--muted);margin:0 0 12px}
 .badge{font-size:11px;padding:2px 7px;border-radius:9px;background:var(--chip);color:var(--muted);font-weight:500;vertical-align:2px;margin-left:6px}
@@ -279,7 +290,7 @@ const SRC = {family:'반실사', model:'Realism Illustrious', size:'832×1248'};
 let versions = [{colors:{}, hidden:[], bg:null, label:'원본'}];
 let cur = 0, sel = null, hover = null, tool = 'seg', zoom = 1, ar = 'orig', busy = false, lastEdit = null;
 const expanded = {epaulets:true};
-const S = () => versions[cur];
+const S = () => (typeof pending !== 'undefined' && pending) ? pending.preview : versions[cur];
 
 function render(st, o = {}) {
   const p = o.prefix || 'm', only = o.only, color = id => st.colors[id] || DEF[id];
@@ -306,8 +317,12 @@ const mini = (st, box, only, withBg) => {
 const membersOf = id => id === 'background' ? ['background'] : (SEG_BY[id]?.members || []);
 const visibleSegs = () => SEGS.filter(s => s.bgOnly ? !!S().bg : s.members.some(l => !S().hidden.includes(l)));
 
-function paintScene() {
-  scene.innerHTML = render(S());
+const ICON_TRASH = '<svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>';
+const delBtn = s => `<button class="del${s.kids?' k':''}" data-del="${s.id}" aria-label="${s.ko} 삭제" title="삭제">${ICON_TRASH}</button>`;
+let pending = null;            // segment deleted, waiting for "what goes there?"
+const DEFAULT_PH = promptIn.placeholder;
+function paintScene(st) {
+  scene.innerHTML = render(st || (pending ? pending.preview : S()));
   applyHighlight();
 }
 function applyHighlight() {
@@ -339,7 +354,7 @@ function paintPane() {
         <span class="lbl"><b>${s.ko}${s.kids?` <small>(${s.kids.filter(k=>!S().hidden.includes(k.id)).length})</small>`:''}</b><small>${s.en}</small></span>
         ${s.kids ? ICON_CHEV : ''}</button>`;
     pane.innerHTML = `<h2>세그먼트 <button class="ghost" id="dlAll">${ICON_DL}모두 다운로드</button></h2>
-      <ul class="segs">${visibleSegs().map(s => `<li>${row(s)}${s.kids && expanded[s.id] ? `<ul>${s.kids.filter(k => !S().hidden.includes(k.id)).map(k => `<li>${row(k, true)}</li>`).join('')}</ul>` : ''}</li>`).join('')}</ul>`;
+      <ul class="segs">${visibleSegs().map(s => `<li>${row(s)}${delBtn(s)}${s.kids && expanded[s.id] ? `<ul>${s.kids.filter(k => !S().hidden.includes(k.id)).map(k => `<li>${row(k, true)}${delBtn(k)}</li>`).join('')}</ul>` : ''}</li>`).join('')}</ul>`;
   } else if (tool === 'brush') {
     pane.innerHTML = `<h2>마스크 브러시</h2>
       <p class="note">자동 세그먼트로 안 잡히는 부분을 직접 칠해서 선택합니다. 칠한 영역만 다시 그려요.</p>
@@ -374,8 +389,8 @@ function decide(text) {
   const bgTarget = BG_WORDS.find(([re]) => re.test(t));
   const color = COLORS.find(([re]) => re.test(t));
   if (/배경/.test(t) && /투명|누끼|제거|없애|지워/.test(t)) return {kind:'bgremove', act:'배경 제거', model:'BiRefNet'};
-  if (REMOVE.test(t) && sel) return {kind:'remove', act:'물체 제거', model:'LaMa'};
-  if (REMOVE.test(t) && !sel) return {kind:'need-sel', act:'물체 제거', model:'LaMa', warn:'지울 부분을 먼저 선택하세요'};
+  if (REMOVE.test(t) && sel) return {kind:'remove', act:'삭제', model:'삭제 후 채울 내용을 물어봅니다'};
+  if (REMOVE.test(t) && !sel) return {kind:'need-sel', act:'삭제', model:'', warn:'지울 부분을 먼저 선택하세요'};
   if (sel === 'background' || (!sel && (/배경/.test(t) || bgTarget))) return {kind:'bg', act: sel ? '부분 다시 그리기' : '문장 편집', model: sel ? SRC.model : 'Qwen-Image-Edit', bg: bgTarget ? bgTarget[1] : 'studio'};
   if (sel) return {kind:'inpaint', act:'부분 다시 그리기', model:SRC.model, why:`원본과 같은 ${SRC.family} 계열`, color};
   return {kind:'instruct', act:'문장 편집', model:'Qwen-Image-Edit', why:'선택 없음 → 이미지 전체 지시 편집'};
@@ -383,9 +398,21 @@ function decide(text) {
 
 const SUGGEST_SEL = ['빨간색으로 바꿔줘','지워줘','가죽 재질로'];
 const SUGGEST_NONE = ['배경을 해변으로','배경을 밤 도시로','배경 투명하게'];
+const FILL_SUG = ['금색 장식','같은 자리에 다른 디자인으로','검은 가죽 소재'];
+const FILL_SUG_BG = ['해변 배경','밤 도시 배경','흰 스튜디오 배경'];
 function paintRoute() {
   const t = promptIn.value;
   let h = '';
+  if (pending) {
+    const sug = pending.id === 'background' ? FILL_SUG_BG : FILL_SUG;
+    route.innerHTML = `<div class="ask"><b>${pending.name} 삭제 · 그 자리를 어떻게 채울까요? 아래에 입력하거나 골라 주세요.</b>
+      <div class="opts"><button type="button" class="pill plain" id="fillPlain">비워두기 (주변에 맞춰 자연스럽게 · LaMa)</button>
+      ${sug.map(s => `<button type="button" class="pill sug" data-sug="${s}">${s}</button>`).join('')}
+      <button type="button" class="pill sug" id="cancelDel">삭제 취소</button></div>
+      ${t.trim() ? `<span class="pill auto">자동 선택 → <b>삭제한 자리 다시 그리기</b> · ${SRC.model}</span>` : ''}</div>`;
+    sendBtn.disabled = !t.trim() || busy;
+    return;
+  }
   if (sel) h += `<span class="pill sel">@${SEG_BY[sel]?.ko || '배경'}<button type="button" id="clearSel" aria-label="선택 해제">${ICON_X}</button></span>`;
   if (brushHasPaint()) h += `<span class="pill sel">@브러시 영역<button type="button" id="clearBrush" aria-label="브러시 영역 지우기">${ICON_X}</button></span>`;
   if (t.trim()) {
@@ -422,6 +449,7 @@ function applyEdit(text) {
   if (brushHasPaint() && !sel) { toast('미리보기에서는 브러시 영역 편집 결과를 보여줄 수 없어요. 실제 앱에서 그 영역만 다시 그립니다.'); clearBrush(); return; }
   const d = decide(text);
   if (d.warn) { toast(d.warn); return; }
+  if (d.kind === 'remove') { startDelete(sel); return; }
   lastEdit = text;
   runBusy(`${d.act} 중 · ${d.model}`, () => {
     const n = clone(S());
@@ -440,6 +468,41 @@ function applyEdit(text) {
       return;
     }
     toast('미리보기에서는 배경·색·제거 편집만 보여줄 수 있어요. 실제 앱에서는 문장대로 이미지 전체를 편집합니다.');
+  });
+}
+
+/* ---------- delete → ask what fills the hole ---------- */
+const VARIANTS = ['#b8923a','#7a3b46','#3d5a80','#5b6b3a','#46406b'];
+function startDelete(id) {
+  if (busy) return;
+  const name = id === 'background' ? '배경' : SEG_BY[id].ko;
+  const preview = clone(S());
+  if (id === 'background') preview.bg = null; else preview.hidden.push(...membersOf(id));
+  pending = {id, name, members: membersOf(id), preview};
+  sel = null; hover = null; promptIn.value = '';
+  promptIn.placeholder = `${name} 자리에 무엇을 그릴지 입력하세요`;
+  paintScene(); paintPane(); paintRoute(); promptIn.focus();
+}
+function endPending() { const p = pending; pending = null; promptIn.placeholder = DEFAULT_PH; return p; }
+function cancelDelete() { endPending(); paintScene(); paintPane(); paintRoute(); toast('삭제를 취소했어요'); }
+function fillPlain() {
+  const p = endPending(); paintScene(p.preview);
+  runBusy('삭제한 자리를 주변에 맞춰 채우는 중 · LaMa', () => commit(clone(p.preview), `${p.name} 삭제`));
+}
+function fillWith(text) {
+  const p = endPending(); paintScene(p.preview);
+  runBusy(`삭제한 자리에 "${text.trim()}" 그리는 중 · ${SRC.model}`, () => {
+    const n = clone(p.preview);
+    if (p.id === 'background') {
+      const b = BG_WORDS.find(([re]) => re.test(text)) || [null, /흰|화이트|white/i.test(text) ? 'studio' : 'studio'];
+      n.bg = b[1]; commit(n, `배경 자리: ${text.trim()}`); return;
+    }
+    n.hidden = n.hidden.filter(l => !p.members.includes(l));
+    const color = COLORS.find(([re]) => re.test(text));
+    const c = color ? color[1] : VARIANTS[versions.length % VARIANTS.length];
+    p.members.filter(l => !['face','hands','legs'].includes(l) || p.id === l).forEach(l => n.colors[l] = c);
+    commit(n, `${p.name} 자리: ${text.trim()}`);
+    toast('미리보기에서는 같은 모양에 색만 바뀌어요. 실제 앱에서는 입력한 내용을 그 자리에 새로 그립니다.');
   });
 }
 
@@ -500,6 +563,8 @@ scene.addEventListener('pointermove', e => { const g = e.target.closest('.seg');
 scene.addEventListener('pointerleave', () => { hover = null; applyHighlight(); });
 
 pane.addEventListener('click', e => {
+  const dl = e.target.closest('[data-del]');
+  if (dl) { startDelete(dl.dataset.del); return; }
   const r = e.target.closest('.row');
   if (r) {
     const s = SEG_BY[r.dataset.id];
@@ -531,14 +596,16 @@ function setTool(t) {
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
 
-rail.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; cur = +b.dataset.v; if (sel && membersOf(sel).every(l => S().hidden.includes(l))) sel = null; refresh(); });
+rail.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b || busy) return; endPending(); cur = +b.dataset.v; if (sel && membersOf(sel).every(l => S().hidden.includes(l))) sel = null; refresh(); });
 route.addEventListener('click', e => {
   if (e.target.closest('#clearSel')) { sel = null; applyHighlight(); paintRoute(); return; }
   if (e.target.closest('#clearBrush')) { clearBrush(); return; }
+  if (e.target.closest('#fillPlain')) { if (!busy) fillPlain(); return; }
+  if (e.target.closest('#cancelDel')) { if (!busy) cancelDelete(); return; }
   const s = e.target.closest('[data-sug]'); if (s) { promptIn.value = s.dataset.sug; paintRoute(); promptIn.focus(); }
 });
 promptIn.addEventListener('input', paintRoute);
-$('#form').addEventListener('submit', e => { e.preventDefault(); const t = promptIn.value; if (!t.trim() || busy) return; promptIn.value = ''; applyEdit(t); });
+$('#form').addEventListener('submit', e => { e.preventDefault(); const t = promptIn.value; if (!t.trim() || busy) return; promptIn.value = ''; if (pending) fillWith(t); else applyEdit(t); });
 
 $('#regenBtn').onclick = () => {
   if (cur === 0) { toast('원본 재생성: 같은 프롬프트, 새 시드로 다시 생성합니다'); return; }
@@ -556,8 +623,10 @@ $('#favBtn').onclick = e => { const b = e.currentTarget; const on = b.getAttribu
 document.querySelectorAll('[data-fb]').forEach(b => b.onclick = () => toast('평가를 기록했어요. 자동 모델 선택을 개선하는 데 씁니다'));
 document.querySelectorAll('[data-msg]').forEach(b => b.onclick = () => toast(b.dataset.msg));
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && pending && !busy) { cancelDelete(); return; }
   if (e.target === promptIn) return;
   if (e.key === 'Escape') { sel = null; applyHighlight(); paintRoute(); }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && sel && !pending) { e.preventDefault(); startDelete(sel); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && cur > 0) { e.preventDefault(); cur--; refresh(); }
 });
 
