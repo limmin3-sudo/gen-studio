@@ -184,6 +184,27 @@ const Gen = (() => {
     }
     e.target.value = ''; setRefs(refs);
   };
+  /* ---- pose: copy the body pose of a photo (or a saved pose map) */
+  let pose = store.get('gen.pose', null);   // {id, strength}
+  const POSE_STR = [[0.6, '느슨하게'], [0.85, '보통'], [1.1, '정확하게']];
+  function renderPose() {
+    $('#addPose').hidden = !!pose;
+    $('#genPose').innerHTML = pose ? `<span class="ref"><img src="${thumbUrl(pose.id)}" alt=""><i>포즈</i><button type="button" data-unpose aria-label="포즈 빼기">×</button></span>
+      <span class="posestr">${POSE_STR.map(([v, n]) => `<button type="button" data-pstr="${v}" aria-pressed="${v === pose.strength}">${n}</button>`).join('')}</span>` : '';
+  }
+  function setPose(id, strength) { pose = id ? {id, strength: strength ?? pose?.strength ?? 0.85} : null; store.set('gen.pose', pose); renderPose(); preview(); }
+  $('#addPose').onclick = () => $('#poseIn').click();
+  $('#poseIn').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const fd = new FormData(); fd.append('file', f, f.name);
+    try { const r = await req('POST', '/api/import', fd); setPose(r.id); toast('이 사진의 자세대로 그려요. 처음 한 번은 포즈를 읽느라 조금 더 걸려요.', 5000); } catch (err) { toast(err.message); }
+  };
+  $('#genPose').addEventListener('click', e => {
+    if (e.target.closest('[data-unpose]')) setPose(null);
+    const b = e.target.closest('[data-pstr]'); if (b) setPose(pose.id, +b.dataset.pstr);
+  });
+  renderPose();
+
   prompt.value = store.get('lastPrompt', '');
   for (const [k, s] of Object.entries(sels)) {
     s.value = store.get('gen.' + k, s.value) ?? s.value;
@@ -205,6 +226,7 @@ const Gen = (() => {
             model: sels.model.value, character: charSel.value || null, references: refs,
             loras: picked.map(p => ({name: p.id, strength: p.strength})),
             negative: $('#genNeg').value.trim(), seed: Number.isFinite(seed) && seed >= 0 ? seed : -1,
+            pose: pose ? pose.id : null, pose_strength: pose ? pose.strength : 0.85,
             regions: regions.filter(r => r.prompt.trim()).map(r => ({box: r.box.map(v => +v.toFixed(4)), prompt: r.prompt.trim()}))};
   }
 
@@ -341,7 +363,8 @@ const Gen = (() => {
   });
   return {show() { syncLabels(); loadChars().then(preview); loadLoras(); renderRefs(); loadRecent(); autoGrow(prompt); },
           addRef(id) { if (!refs.includes(id)) setRefs([...refs, id]); },
-          reloadChars() { return loadChars(); }};
+          reloadChars() { return loadChars(); },
+          setPose(id) { setPose(id); }};
 })();
 
 /* ============================================================== gallery */
@@ -583,7 +606,7 @@ const Editor = (() => {
         <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">이 사진만 등록</button></div></div>
         <div class="field"><div class="seg2"><button id="buildChar" aria-pressed="true">이 사진 1장으로 캐릭터 만들기</button></div>
           <p class="note" style="margin-top:6px">얼굴 정면·전신·3/4 측면 사진을 새로 만들고 인물 특징을 읽어서 함께 등록해요. 같은 사람으로 더 잘 그려집니다. (Qwen-Image 2.1, 3장 몇 분)</p></div>
-        <div class="field"><div class="seg2"><button id="useAsRef">생성 화면의 참고 이미지로 보내기</button></div></div>`;
+        <div class="field"><div class="seg2"><button id="useAsRef">생성 화면의 참고 이미지로 보내기</button><button id="useAsPose">이 자세로 새로 그리기</button></div></div>`;
     }
     pane.innerHTML = h;
   }
@@ -627,6 +650,7 @@ const Editor = (() => {
         .then(j => runJob(j, '배경 제거 · BiRefNet')).catch(err => toast(err.message, 6000));
       return;
     }
+    if (e.target.closest('#useAsPose') && rec) { Gen.setPose(rec.id); location.hash = 'generate'; toast('이 사진의 자세로 그려요. 무엇을 그릴지 적어 주세요.'); return; }
     if (e.target.closest('#useAsRef') && rec) { Gen.addRef(rec.id); toast('생성 화면의 참고 이미지에 넣었어요'); }
     if (e.target.closest('#buildChar') && rec && !busy) {
       const name = $('#charName').value.trim();

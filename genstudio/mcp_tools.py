@@ -195,6 +195,9 @@ def build_mcp(state: "State") -> MCPServer:
         loras: list[dict] | None = None,
         denoise: float | None = None,
         regions: list[dict] | None = None,
+        pose_id: str | None = None,
+        pose_path: str | None = None,
+        pose_strength: float = 0.85,
         wait_seconds: int = 45,
         include_image: bool = True,
     ):
@@ -203,11 +206,14 @@ def build_mcp(state: "State") -> MCPServer:
         One reference + style='semi' (or "반실사로", "실사화", a non-Qwen model or LoRA) redraws that picture in the
         new look with the style's own model; denoise 0.3-0.8 sets how much changes (default 0.55 semi, 0.6 real).
         regions: [{"box": [left, top, right, bottom] as 0-1 fractions, "prompt": "..."}] (up to 6) to place
-        different people or things in different parts of the picture; prompt then describes the whole scene."""
+        different people or things in different parts of the picture; prompt then describes the whole scene.
+        pose_id / pose_path: a photo (or a pose map) whose body pose the new picture copies; the size follows it."""
         refs = _bring_in(reference_ids, reference_paths)
         req = GenerateRequest(prompt=prompt, style=style, aspect=aspect, model=model, negative=negative,
                               seed=seed, count=max(1, min(count, 4)), character=character, references=refs,
-                              loras=loras or [], denoise=denoise, regions=regions or [])
+                              loras=loras or [], denoise=denoise, regions=regions or [],
+                              pose=(pose_id or (_bring_in(None, [pose_path])[0] if pose_path else None)),
+                              pose_strength=pose_strength)
         job = state.engine.submit_generate(req)
         return await _finish(job, wait_seconds, include_image)
 

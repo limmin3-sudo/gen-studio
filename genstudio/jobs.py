@@ -50,6 +50,19 @@ def region_position(box: tuple[float, float, float, float]) -> str:
     return "in the center"
 
 
+def fit_on_black(png: bytes, w: int, h: int) -> bytes:
+    """Fit a pose map inside w x h without stretching; the rest stays black (= no body there)."""
+    with Image.open(io.BytesIO(png)) as im:
+        im = im.convert("RGB")
+        s = min(w / im.width, h / im.height)
+        im = im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))), Image.LANCZOS)
+        canvas = Image.new("RGB", (w, h), (0, 0, 0))
+        canvas.paste(im, ((w - im.width) // 2, (h - im.height) // 2))
+        buf = io.BytesIO()
+        canvas.save(buf, "PNG")
+        return buf.getvalue()
+
+
 def region_mask(box: tuple[float, float, float, float], w: int, h: int) -> bytes:
     from PIL import ImageDraw, ImageFilter
     m = Image.new("L", (w, h), 0)
@@ -78,6 +91,8 @@ class GenerateRequest(BaseModel):
     translate: bool | None = Field(None, description="한국어 자동 번역 (비우면 설정값)")
     denoise: float | None = Field(None, ge=0.1, le=1.0,
                                   description="참고 이미지 1장을 다른 화풍으로 다시 그릴 때 바꾸는 정도 (낮을수록 원본 유지)")
+    pose: str | None = Field(None, description="이 이미지의 포즈대로 그리기 (사진 또는 포즈 맵 id)")
+    pose_strength: float = Field(0.85, ge=0.2, le=1.5, description="포즈를 따르는 정도")
     regions: list[Region] = Field(default_factory=list, max_length=6,
                                   description="영역별 프롬프트: box는 0~1 비율 [왼쪽, 위, 오른쪽, 아래]")
 
@@ -434,11 +449,15 @@ class Engine:
                 decision.update(model_id=m.id, model_name=m.name, family=m.family.id)
                 decision["reasons"] = decision["reasons"] + [f"LoRA → {m.name}"]
             decision["loras"] = loras
+        if req.pose:
+            self._plan_pose(req, decision)
         if req.character or req.references:
             ids, char = self.resolve_refs(req.references, req.character)
             if len(ids) > 10:
                 raise ValueError("참고 이미지는 캐릭터 사진을 포함해 10장까지예요")
             rm = self._restyle_model(req, d, ids, char, lfam)
+            if rm and req.pose:
+                raise ValueError("그림체 바꾸기와 포즈 지정은 같이 쓸 수 없어요")
             if rm:
                 # one picture in another look: redraw it with the style's own model instead of Qwen
                 src = self.library.get(ids[0])
@@ -458,7 +477,39 @@ class Engine:
                             character=char["name"] if char else None)
             decision["reasons"] = [f"캐릭터 '{char['name']}'" if char else f"참고 이미지 {len(ids)}장",
                                    "→ 참고 이미지를 따르는 Qwen-Image 2.1"]
+            if req.pose:
+                if len(ids) >= 10:
+                    raise ValueError("참고 이미지가 10장이면 포즈 이미지를 더 넣을 수 없어요")
+                decision["pose"]["kind"] = "qwen"
+                decision["reasons"].append("포즈 이미지도 참고")
         return decision
+
+    def _plan_pose(self, req: GenerateRequest, decision: dict) -> None:
+        """Pick how the pose is applied for the chosen model and size the picture like the pose image."""
+        rec = self.library.get(req.pose)
+        if not rec:
+            raise KeyError(f"포즈 이미지를 찾을 수 없어요: {req.pose}")
+        is_map = rec.get("kind") == "pose"
+        if not is_map and not self.registry.tool_ready("pose_detect", self.settings.models_dir):
+            raise ValueError("포즈 인식 모델(SDPose)이 없어요. update.bat을 실행해 받아 주세요.")
+        fam = decision["family"]
+        if fam == "wan22":                     # Wan cannot follow a pose: use the realistic main model
+            if req.model and req.model != "auto":
+                raise ValueError("Wan 2.2는 포즈를 따라 그리지 못해요. 다른 모델을 고르세요.")
+            m = router.pick_model(self.registry, "realistic", self.settings.models_dir, [])
+            decision.update(model_id=m.id, model_name=m.name, family=m.family.id)
+            fam = m.family.id
+        kind = {"zimage": "zimage", "illustrious": "sdxl", "qwen21": "qwen"}.get(fam)
+        tool = {"zimage": "control_zimage", "sdxl": "control_sdxl_pose"}.get(kind)
+        if tool and not self.registry.tool_ready(tool, self.settings.models_dir):
+            raise ValueError("포즈용 컨트롤넷 모델이 없어요. update.bat을 실행해 받아 주세요.")
+        if not (req.width and req.height) and req.aspect == "auto":
+            r = rec["width"] / rec["height"]
+            name = min(router.SIZES, key=lambda k: abs(router.SIZES[k][0] / router.SIZES[k][1] - r))
+            decision.update(aspect=name, width=router.SIZES[name][0], height=router.SIZES[name][1])
+        decision["pose"] = {"image": req.pose, "kind": kind, "is_map": is_map, "strength": req.pose_strength,
+                            "file": self.registry.tool_file(tool) if tool else None}
+        decision["reasons"] = decision["reasons"] + ["포즈 따라 그리기"]
 
     def _restyle_model(self, req: GenerateRequest, d: router.Decision, ids: list[str], char: dict | None,
                        lfam: str | None):
@@ -1033,6 +1084,18 @@ class Engine:
             prompt = apply_triggers(prompt, loras)
         if job.decision.get("character"):
             prompt = _with_identity(prompt, job.decision["character"], self.characters.get(job.decision["character"]))
+        pose = job.decision.get("pose")
+        control, pose_id = None, None
+        if pose:
+            pose_id, pose_png = await self._pose_map(job, pose)
+            pose_png = fit_on_black(pose_png, job.decision["width"], job.decision["height"])
+            pose_name = await self.comfy.upload_image(pose_png, f"pose-{pose_id}-{job.decision['width']}.png")
+            if pose["kind"] == "qwen":
+                ref_names = [*ref_names, pose_name]
+                prompt += (f" The person or people take exactly the pose shown in image {len(ref_names)} "
+                           "(a skeleton drawing; do not draw the skeleton itself).")
+            else:
+                control = {"kind": pose["kind"], "image": pose_name, "file": pose["file"], "strength": pose["strength"]}
         regions = []
         for r in req.regions:
             box = r.clamp()
@@ -1056,7 +1119,7 @@ class Engine:
             else:
                 graph, extra = workflows.txt2img(
                     model, prompt, negative, job.decision["width"], job.decision["height"], seed,
-                    models_dir=self.settings.models_dir, steps=req.steps, cfg=req.cfg, loras=loras)
+                    models_dir=self.settings.models_dir, steps=req.steps, cfg=req.cfg, loras=loras, control=control)
             span = 1 / n / (1 + len(regions))
             outs = await self.comfy.run(graph, self._progress(job, i / n, span))
             data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
@@ -1066,6 +1129,7 @@ class Engine:
                                                self._progress(job, i / n + span * k, span))
             rec = self.library.add(data, {
                 "regions": [{"box": list(b), "prompt": r.prompt} for (b, _t), r in zip(regions, req.regions)] or None,
+                "pose_id": pose_id, "pose_strength": pose["strength"] if pose else None,
                 "kind": "generate", "source": "gen-studio", "prompt": prompt_ko, "prompt_en": prompt if prompt != prompt_ko else None,
                 "negative": negative,
                 "final_prompt": extra["final_prompt"], "model_id": model.id, "family": model.family.id,
@@ -1077,6 +1141,28 @@ class Engine:
                 "loras": [{"name": l["label"], "strength": l["strength"]} for l in loras],
             })
             job.result_ids.append(rec["id"])
+
+    async def _pose_map(self, job: Job, pose: dict) -> tuple[str, bytes]:
+        """The skeleton picture: as given, or made from the photo once and kept in the library for reuse."""
+        rec = self.library.get(pose["image"])
+        if pose["is_map"]:
+            return rec["id"], self.library.path(rec["id"]).read_bytes()
+        done = next((r for r in self.library.list(limit=100000) if r.get("kind") == "pose" and r.get("parent_id") == rec["id"]), None)
+        if done:
+            return done["id"], self.library.path(done["id"]).read_bytes()
+        job.message = "포즈 읽는 중"
+        with Image.open(self.library.path(rec["id"])) as im:
+            im = im.convert("RGB")
+            im.thumbnail((1024, 1024), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+        name = await self.comfy.upload_image(buf.getvalue(), f"posesrc-{rec['id']}.png")
+        files = self.registry.tools["pose_detect"]
+        outs = await self.comfy.run(workflows.pose_map(name, files[0].name, files[1].name))
+        data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+        prec = self.library.add(data, {"kind": "pose", "source": "gen-studio", "parent_id": rec["id"],
+                                       "label": "포즈", "prompt": rec.get("prompt", "")})
+        return prec["id"], data
 
     async def _draw_region(self, job: Job, model, png: bytes, box, text: str, base_prompt: str, negative: str,
                            seed: int, loras: list[dict], progress) -> bytes:
@@ -1325,7 +1411,7 @@ class Engine:
                 references=[r for r in rec.get("ref_ids") or []
                             if not rec.get("character") or r not in (self.characters.get(rec["character"]) or {}).get("ref_ids", [])],
                 character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise"),
-                regions=rec.get("regions") or []))
+                regions=rec.get("regions") or [], pose=rec.get("pose_id"), pose_strength=rec.get("pose_strength") or 0.85))
         if rec.get("kind") == "edit" and rec.get("parent_id"):
             edit = rec.get("edit") or {}
             if edit.get("mode") == "character_sheet":

@@ -204,3 +204,29 @@ tools:
       url: https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged/resolve/main/RealESRGAN_x4plus.safetensors
       size: 66857836
       sha256: 37f9a931c215f040aa6d50f711f2cb115f713c46df1d0d6469a8bd7bfe9a60bb
+  # 포즈: 사진에서 뼈대(포즈 맵) 뽑기 = 사람 찾기(RT-DETR) + SDPose
+  pose_detect:
+    - name: sdpose_wholebody_fp16.safetensors
+      dir: checkpoints
+      url: https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors
+      size: 1916645792
+      sha256: 63d01f9a7494560693b24767f4469d59c9d3266b31ff0a253e74d1e611442721
+    - name: rt_detr_v4-x-hgnet_fp16.safetensors
+      dir: diffusion_models
+      url: https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors
+      size: 123968978
+      sha256: 581f9af9bbabb664d1891cbccd823308b176ecd409146f954dfa39af3bec2476
+  # 포즈대로 그리기: 실사(Z-Image) 컨트롤넷
+  control_zimage:
+    - name: Z-Image-Turbo-Fun-Controlnet-Union.safetensors
+      dir: model_patches
+      url: https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union.safetensors
+      size: 3101572408
+      sha256: 86c085c0d7853f12ce5183499934b54d08371c60f549c5a6b20615cd23989388
+  # 포즈대로 그리기: 반실사(Illustrious/SDXL) 오픈포즈 컨트롤넷
+  control_sdxl_pose:
+    - name: controlnet-openpose-sdxl-1.0.safetensors
+      dir: controlnet
+      url: https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors
+      size: 2502139104
+      sha256: b8524e557a7df60d081f5d4a0eb109967d107df217943bf88c2d99b9ebcc06c5

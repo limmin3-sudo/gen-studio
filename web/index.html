@@ -40,6 +40,7 @@
           <label class="sel-pill">캐릭터 <b id="charLbl">없음</b>
             <select id="genChar" aria-label="캐릭터"><option value="">없음</option></select></label>
           <button type="button" class="sel-pill" id="addRef">+ 참고 이미지</button>
+          <button type="button" class="sel-pill" id="addPose" title="이 사진 속 사람과 같은 자세로 그려요">+ 포즈</button>
           <button type="button" class="sel-pill" id="addLora">+ LoRA</button>
           <button type="button" class="sel-pill adv" id="advBtn" aria-expanded="false">고급 <b id="advBadge"></b></button>
         </div>
@@ -56,6 +57,7 @@
         </div>
         <div class="lpick" id="loraPick" hidden></div>
         <div class="refs" id="genRefs"></div>
+        <div class="refs" id="genPose"></div>
         <div class="refs" id="genLoras"></div>
         <form class="prompt" id="genForm">
           <textarea id="genPrompt" rows="1" placeholder="무엇을 그릴까요? 예: 비 오는 밤 골목에 서 있는 여자, 실사, 세로"></textarea>
@@ -162,6 +164,7 @@
 </div>
 <input type="file" id="fileIn" accept="image/*" hidden>
 <input type="file" id="refIn" accept="image/*" multiple hidden>
+<input type="file" id="poseIn" accept="image/*" hidden>
 <input type="file" id="loraFile" accept=".safetensors" multiple hidden>
 <div class="drop" id="drop" hidden>여기에 놓으면 편집기로 불러옵니다</div>
 <div class="toast" id="toast" role="status"></div>

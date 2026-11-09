@@ -366,3 +366,38 @@ def test_regional_prompts(client, fake):
     r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
     assert client.get(f"/api/images/{r['result_ids'][0]}").json()["regions"] == rec["regions"]
     assert client.post("/api/generate", json={"prompt": "x", "regions": [{"box": [0, 0, 0.01, 0.01], "prompt": "y"}]}).status_code == 400
+
+
+def test_pose_from_photo(client, fake):
+    im = Image.new("RGB", (900, 1600), (40, 40, 40))
+    buf = io.BytesIO(); im.save(buf, "PNG")
+    photo = client.post("/api/import", files={"file": ("pose.png", buf.getvalue(), "image/png")}).json()["id"]
+    j = client.post("/api/generate", json={"prompt": "photo of a woman in a park", "pose": photo}).json()
+    assert j["decision"]["pose"]["kind"] == "zimage" and j["decision"]["aspect"] == "tall"
+    j = wait_job(client, j["id"])
+    assert j["status"] == "done", j["error"]
+    graphs = list(fake.prompts.values())
+    pm = graphs[-2]
+    assert any(n["class_type"] == "SDPoseKeypointExtractor" for n in pm.values())
+    g = graphs[-1]
+    cn = next(n for n in g.values() if n["class_type"] == "QwenImageDiffsynthControlnet")["inputs"]
+    assert cn["strength"] == 0.85
+    assert next(n for n in g.values() if n["class_type"] == "ModelPatchLoader")["inputs"]["name"].startswith("Z-Image-Turbo-Fun")
+    ks = next(n for n in g.values() if n["class_type"] == "KSampler")["inputs"]
+    assert g[ks["model"][0]]["class_type"] == "QwenImageDiffsynthControlnet"
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    pose_rec = client.get(f"/api/images/{rec['pose_id']}").json()
+    assert pose_rec["kind"] == "pose" and pose_rec["parent_id"] == photo and (rec["width"], rec["height"]) == (768, 1344)
+    # semi-real: SDXL ControlNet on the prompts; the saved pose map is reused (no second extraction)
+    n_before = len(fake.prompts)
+    s = wait_job(client, client.post("/api/generate", json={"prompt": "반실사 여자", "pose": photo}).json()["id"])
+    new = list(fake.prompts.values())[n_before:]
+    assert not any(n["class_type"] == "SDPoseKeypointExtractor" for gr in new for n in gr.values())
+    g = new[-1]
+    assert any(n["class_type"] == "ControlNetApplyAdvanced" for n in g.values())
+    # with a reference picture: Qwen gets the pose map as one more image
+    q = wait_job(client, client.post("/api/generate", json={"prompt": "image 1 여자가 공원에", "references": [photo], "pose": photo}).json()["id"])
+    g = list(fake.prompts.values())[-1]
+    enc = next(n for n in g.values() if n["class_type"] == "TextEncodeQwenImage21")["inputs"]
+    assert "images.image_2" in enc and "pose shown in image 2" in enc["prompt"]
+    assert q["status"] == "done" and s["status"] == "done"

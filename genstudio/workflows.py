@@ -139,12 +139,47 @@ def _empty_latent(g: Graph, model: ModelSpec, width: int, height: int):
     return out(g.add(cls, width=int(width), height=int(height), batch_size=1))
 
 
+def _apply_control(g: Graph, model: ModelSpec, ms: dict, pos, neg, v, control: dict | None):
+    """Pose (or other) control image. Z-Image: Fun ControlNet Union as a model patch (official template);
+    Illustrious/SDXL: a regular ControlNet on the prompts."""
+    if not control:
+        return ms, pos, neg
+    img = out(g.add("LoadImage", image=control["image"]))
+    strength = float(control.get("strength", 1.0))
+    if control["kind"] == "zimage":
+        patch = out(g.add("ModelPatchLoader", name=control["file"]))
+        ms = {k: out(g.add("QwenImageDiffsynthControlnet", model=m, model_patch=patch, vae=v, image=img,
+                           strength=strength)) for k, m in ms.items()}
+    else:
+        cn = out(g.add("ControlNetLoader", control_net_name=control["file"]))
+        ap = g.add("ControlNetApplyAdvanced", positive=pos, negative=neg, control_net=cn, image=img, strength=strength,
+                   start_percent=0.0, end_percent=float(control.get("end", 0.9)), vae=v)
+        pos, neg = out(ap, 0), out(ap, 1)
+    return ms, pos, neg
+
+
+def pose_map(image_name: str, sdpose_file: str, detector_file: str, prefix: str = "gen-studio/pose") -> dict:
+    """Photo -> OpenPose-style skeleton picture for every person (ComfyUI's SDPose multi-person template)."""
+    g = Graph()
+    img = out(g.add("LoadImage", image=image_name))
+    ck = g.add("CheckpointLoaderSimple", ckpt_name=sdpose_file)
+    det = out(g.add("UNETLoader", unet_name=detector_file, weight_dtype="default"))
+    boxes = out(g.add("RTDETR_detect", model=det, image=img, threshold=0.5, class_name="person", max_detections=10))
+    kp = out(g.add("SDPoseKeypointExtractor", model=out(ck, 0), vae=out(ck, 2), image=img, batch_size=16, bboxes=boxes))
+    draw = g.add("SDPoseDrawKeypoints", keypoints=kp, draw_body=True, draw_hands=True, draw_face=True, draw_feet=True,
+                 stick_width=4, face_point_size=2, score_threshold=0.5, draw_head=True)
+    g.add("SaveImage", filename_prefix=prefix, images=out(draw))
+    return g.nodes
+
+
 def txt2img(model: ModelSpec, prompt: str, negative: str, width: int, height: int, seed: int, *,
             models_dir: Path | None = None, steps: int | None = None, cfg: float | None = None,
-            prefix: str = "gen-studio/img", loras: list[dict] | None = None) -> tuple[dict, dict]:
+            prefix: str = "gen-studio/img", loras: list[dict] | None = None,
+            control: dict | None = None) -> tuple[dict, dict]:
     g = Graph()
     ms, c, v = _loaders(g, model, models_dir, loras)
     pos, neg, text = _conditioning(g, model, c, v, prompt, negative)
+    ms, pos, neg = _apply_control(g, model, ms, pos, neg, v, control)
     latent = _empty_latent(g, model, width, height)
     s = _sampler(g, model, ms, pos, neg, latent, seed, 1.0, steps, cfg)
     img = out(g.add("VAEDecode", samples=s, vae=v))
@@ -383,6 +418,7 @@ REQUIRED_NODES = sorted({
     "ModelSamplingSD3", "LoraLoaderModelOnly", "KSamplerAdvanced", "EmptyHunyuanLatentVideo",
     # canvas extension
     "ImagePadForOutpaint", "LoraLoader",
+    "ControlNetLoader", "ControlNetApplyAdvanced",
     # upscale
     "UpscaleModelLoader", "ImageUpscaleWithModel", "ImageScaleBy", "ImageScaleToTotalPixels",
     # segmentation
