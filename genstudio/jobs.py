@@ -1203,6 +1203,7 @@ class Engine:
             job.status, job.started_at, job.message = "running", time.time(), "준비 중"
             self._running = jid
             try:
+                await self._ease_memory(job)
                 if job.kind == "generate":
                     await self._run_generate(job)
                 elif job.kind == "segment":
@@ -1239,6 +1240,20 @@ class Engine:
         ev = self._done_events.get(job.id)
         if ev:
             ev.set()
+
+    async def _ease_memory(self, job: Job) -> None:
+        """With 32GB of RAM, models ComfyUI keeps around (Qwen 7GB + its 9GB text encoder, SAM 3, Z-Image, Wan ...)
+        fill memory and Windows starts swapping to disk: steps go from ~2s to over a minute. Unload them first."""
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:  # noqa: BLE001
+            return
+        if vm.available < max(8 * 1024**3, vm.total * 0.25):
+            job.message = "메모리 비우는 중"
+            log.warning("RAM 여유 %.1fGB: 모델을 내려놓고 시작", vm.available / 1024**3)
+            await self.comfy.free()
+            self._last_family = None
 
     async def _switch_family(self, family_id: str) -> None:
         # different model families rarely fit in 16GB together; unload before switching
