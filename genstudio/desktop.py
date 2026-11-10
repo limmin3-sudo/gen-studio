@@ -251,6 +251,12 @@ def main() -> None:
                                         background_color="#F6F5F2", text_select=True)
     desk.window.events.closing += desk.on_closing
     threading.Thread(target=_set_window_icon, daemon=True).start()
+    try:
+        # pywebview blocks downloads by default; the "PNG로 저장" / "MP4로 저장" buttons need them.
+        # WebView2 then saves to the Windows Downloads folder like a browser does.
+        webview.settings["ALLOW_DOWNLOADS"] = True
+    except Exception:  # noqa: BLE001 - older pywebview without settings
+        pass
     webview.start(private_mode=False, storage_path=str(storage))
     desk.quit()
 
