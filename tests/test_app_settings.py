@@ -95,3 +95,30 @@ def test_add_model_from_civitai_link(client, settings, monkeypatch, tmp_path):
     assert [x["id"] for x in client.get("/api/app/models/added").json()["models"]] == [m["id"], q["id"]]
     assert client.delete(f"/api/app/models/added/{m['id']}").json()["removed"]
     assert all(x["id"] != m["id"] for x in client.get("/api/models").json())
+
+
+def test_clear_all_pictures(client, settings, fake, tmp_path):
+    from test_api import mask_png, wait_job
+    settings.comfy_path = tmp_path / "ComfyUI"
+    out = settings.comfy_path / "output" / "gen-studio" / "img"; out.mkdir(parents=True)
+    (out / "x_00001_.png").write_bytes(b"x" * 50)
+    inp = settings.comfy_path / "input" / "gen-studio"; inp.mkdir(parents=True)
+    (inp / "src.png").write_bytes(b"y" * 30)
+    other = settings.comfy_path / "output" / "my_own"; other.mkdir()
+    (other / "keep.png").write_bytes(b"z")                                   # not ours: stays
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo"}).json()["id"])
+    img = j["result_ids"][0]
+    wait_job(client, client.post("/api/edit", json={"image_id": img, "mode": "variation", "prompt": "x"}).json()["id"])
+    client.post("/api/characters", json={"name": "A", "ref_ids": [img]})
+    lib = client.get("/api/app/library").json()
+    assert lib["count"] == 2 and lib["comfy_bytes"] == 80 and lib["characters"] == 1
+    assert client.post("/api/app/library/clear", json={}).status_code == 400          # needs the confirmation
+    r = client.post("/api/app/library/clear", json={"confirm": "모두 지우기"}).json()
+    assert r["deleted"] == 2 and r["characters"] == 1 and r["bytes"] >= 80
+    assert client.get("/api/images").json() == [] and client.get("/api/characters").json() == []
+    assert not (settings.comfy_path / "output" / "gen-studio").exists() and not inp.exists()
+    assert (other / "keep.png").exists()
+    assert not [f for f in settings.output_dir.rglob("*") if f.is_file() and f.suffix in (".png", ".jpg", ".mp4")]
+    # works again afterwards
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo"}).json()["id"])
+    assert j["status"] == "done" and client.get(f"/api/images/{j['result_ids'][0]}/thumb").status_code == 200

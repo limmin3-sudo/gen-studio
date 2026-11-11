@@ -320,3 +320,27 @@ def delete_model_files(models_dir: Path, paths: list[str], allowed: list[dict]) 
             p.unlink()
             n += 1
     return n
+
+
+# ------------------------------------------------------------------ copies ComfyUI keeps of our pictures
+def comfy_copy_dirs(comfy_path: Path | None) -> list[Path]:
+    """ComfyUI saves every result again under output/gen-studio and keeps uploaded sources under input/gen-studio
+    (plus input/gen-studio-train for LoRA training pictures). Only these folders are ours."""
+    if not comfy_path:
+        return []
+    dirs = [comfy_path / "output" / "gen-studio", comfy_path / "input" / "gen-studio"]
+    inp = comfy_path / "input"
+    if inp.is_dir():
+        dirs += sorted(d for d in inp.iterdir() if d.is_dir() and d.name.startswith("gen-studio-"))
+    return [d for d in dirs if d.is_dir()]
+
+
+def comfy_copies_bytes(comfy_path: Path | None) -> int:
+    return sum(f.stat().st_size for d in comfy_copy_dirs(comfy_path) for f in d.rglob("*") if f.is_file())
+
+
+def clear_comfy_copies(comfy_path: Path | None) -> int:
+    freed = comfy_copies_bytes(comfy_path)
+    for d in comfy_copy_dirs(comfy_path):
+        shutil.rmtree(d, ignore_errors=True)
+    return freed

@@ -74,6 +74,13 @@ class Characters:
             self._save()
             return self._items[cid]
 
+    def clear(self) -> int:
+        with self._lock:
+            n = len(self._items)
+            self._items.clear()
+            self._save()
+        return n
+
     def delete(self, key: str) -> bool:
         c = self.get(key)
         if not c:

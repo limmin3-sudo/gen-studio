@@ -203,6 +203,32 @@ class Library:
             seg_dir.rmdir()
         return True
 
+    def usage(self) -> dict:
+        """How many pictures/videos are kept and how much disk they take (thumbnails included)."""
+        n = len(self._items)
+        size = sum(f.stat().st_size for f in self.root.rglob("*") if f.is_file()
+                   and f.name not in ("characters.json", "loras.json", "chips.json"))
+        return {"count": n, "bytes": size}
+
+    def clear_all(self) -> dict:
+        """Delete every picture, video, version, mask, segment file and thumbnail in the library."""
+        before = self.usage()
+        for iid in list(self._items):
+            self.delete(iid)
+        media = (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".json")
+        for f in sorted(self.root.rglob("*"), key=lambda x: -len(x.parts)):     # deepest first
+            if f.is_dir():
+                if not any(f.iterdir()):
+                    f.rmdir()
+            elif f.parent != self.root or (f.suffix.lower() in media and f.name not in (
+                    "characters.json", "loras.json")):
+                f.unlink(missing_ok=True)              # day folders, thumbnails, stray pictures at the top
+        for d in sorted((d for d in self.root.iterdir() if d.is_dir()), key=lambda x: -len(x.parts)):
+            if not any(d.rglob("*")):
+                d.rmdir()
+        (self.root / ".thumbs").mkdir(exist_ok=True)
+        return before
+
     # ------------------------------------------------------------- read
     def get(self, iid: str) -> dict | None:
         return self._items.get(iid)

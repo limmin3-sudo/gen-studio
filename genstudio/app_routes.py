@@ -149,6 +149,27 @@ def register(app: FastAPI, state) -> None:
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    @app.get("/api/app/library")
+    async def app_library(request: Request):
+        local_only(request)
+        u = state.library.usage()
+        return {**u, "comfy_bytes": runtime.comfy_copies_bytes(s.comfy_path),
+                "characters": len(state.engine.characters.list()), "folder": str(s.output_dir)}
+
+    @app.post("/api/app/library/clear")
+    async def app_library_clear(body: dict, request: Request):
+        """Delete every saved picture and video (library, versions, segments, thumbnails, characters and the copies
+        ComfyUI keeps). LoRAs, models, chips and settings stay."""
+        local_only(request)
+        if body.get("confirm") != "모두 지우기":
+            raise HTTPException(400, "확인 문구가 필요해요")
+        if state.engine._running or any(j.status == "queued" for j in state.engine.jobs.values()):
+            raise HTTPException(409, "진행 중인 작업이 끝난 뒤에 지워 주세요")
+        before = state.library.clear_all()
+        chars = state.engine.characters.clear()
+        freed = runtime.clear_comfy_copies(s.comfy_path)
+        return {"deleted": before["count"], "bytes": before["bytes"] + freed, "characters": chars}
+
     @app.get("/api/app/models/added")
     async def app_models_added(request: Request):
         local_only(request)

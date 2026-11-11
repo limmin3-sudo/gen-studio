@@ -348,3 +348,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .chipdlg .row{display:flex;gap:8px;margin:8px 0}
 .chipdlg .row.end{justify-content:flex-end;margin-top:12px}
 @media (max-width:560px){.chipdlg .crow{grid-template-columns:minmax(0,1fr) 30px 30px 30px}.chipdlg .crow [data-f="text"]{grid-column:1/-1;grid-row:2}}
+
+.btn.danger{background:var(--danger);color:#fff}
+.btn.danger:hover{filter:brightness(1.08);background:var(--danger)}
+.btn.danger[disabled]{opacity:.45}
