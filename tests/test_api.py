@@ -406,7 +406,8 @@ def test_pose_from_photo(client, fake):
 def test_image_to_video(client, fake):
     j = wait_job(client, client.post("/api/generate", json={"prompt": "photo of a woman on a beach", "aspect": "portrait"}).json()["id"])
     img = j["result_ids"][0]
-    v = client.post(f"/api/images/{img}/video", json={"prompt": "머리카락이 바람에 날리고 웃는다", "seconds": 3}).json()
+    v = client.post(f"/api/images/{img}/video", json={"prompt": "머리카락이 바람에 날리고 웃는다", "seconds": 3,
+                                                     "quality": "480p"}).json()
     d = v["decision"]
     assert d["frames"] == 49 and d["width"] % 16 == 0 and d["height"] > d["width"]
     assert abs(d["width"] * d["height"] - 832 * 480) < 20000

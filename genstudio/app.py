@@ -293,7 +293,7 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         body = body or {}
         try:
             return engine.submit_video(VideoRequest(image_id=image_id, **{k: v for k, v in body.items()
-                                                                         if k in ("prompt", "seconds", "quality", "seed")})).public()
+                                                                         if k in ("prompt", "seconds", "quality", "seed", "smooth")})).public()
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
         except ValueError as e:
