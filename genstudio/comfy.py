@@ -116,6 +116,7 @@ class ComfyClient:
                 ws = await websockets.connect(url, max_size=None, open_timeout=10)
             except Exception:
                 ws = None  # fall back to polling
+        pid = None
         try:
             pid = await self.queue(graph)
             await _call(on_progress, 0.0, "대기 중")
@@ -123,6 +124,13 @@ class ComfyClient:
                 await self._wait_ws(ws, pid, on_progress, timeout)
             else:
                 await self._wait_poll(pid, on_progress, timeout)
+        except asyncio.CancelledError:
+            if pid:                                   # canceled before ComfyUI got to it: take it off its queue
+                try:
+                    await self._req("POST", "/queue", json={"delete": [pid]})
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
         finally:
             if ws is not None:
                 await ws.close()

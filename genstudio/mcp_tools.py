@@ -288,6 +288,16 @@ def build_mcp(state: "State") -> MCPServer:
         job = state.engine.submit_edit(req)
         return await _finish(job, wait_seconds, include_image)
 
+    @mcp.tool(description=(
+        "Cancel a job that is waiting or running (e.g. a long video started with the wrong settings). A running job "
+        "stops within seconds; nothing is saved. Start a new one with the changed settings."))
+    async def cancel_job(job_id: str):
+        if job_id not in state.engine.jobs:
+            raise ValueError(f"작업을 찾을 수 없어요: {job_id}")
+        ok = await state.engine.cancel(job_id)
+        job = await state.engine.wait(job_id, 15)
+        return {"job_id": job_id, "canceled": ok, "status": job.status}
+
     @mcp.tool(description="Check a running job. Returns status, progress and image_ids when done.")
     async def get_job_status(job_id: str, wait_seconds: int = 0):
         job = state.engine.jobs.get(job_id)

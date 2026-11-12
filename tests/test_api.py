@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import io
 import time
 
@@ -482,3 +483,32 @@ def test_my_chips(client, monkeypatch, tmp_path):
     assert (tmp_path / "chips.json").exists()
     too_many = [{"label": f"c{i}", "text": f"t{i}"} for i in range(81)]
     assert client.put("/api/chips", json={"chips": too_many}).status_code == 400
+
+
+def test_cancel_running_job(client, fake, monkeypatch):
+    """Cancel stops a running job wherever it is (not only inside a ComfyUI graph) and the queue keeps going."""
+    import time as _t
+    eng = client.app.state.gs.engine
+    started = []
+
+    async def hang(*a, **k):
+        started.append(1)
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(eng.comfy, "run", hang)
+    monkeypatch.setattr(eng.comfy, "run_outputs", hang)
+    jid = client.post("/api/generate", json={"prompt": "photo"}).json()["id"]
+    queued = client.post("/api/generate", json={"prompt": "photo 2"}).json()["id"]
+    for _ in range(100):
+        if started:
+            break
+        _t.sleep(0.05)
+    assert client.get(f"/api/jobs/{jid}").json()["status"] == "running"
+    assert client.post(f"/api/jobs/{queued}/cancel").json()["canceled"] is True
+    assert client.post(f"/api/jobs/{jid}/cancel").json()["canceled"] is True
+    j = wait_job(client, jid)
+    assert j["status"] == "canceled" and not j["result_ids"]
+    assert client.get(f"/api/jobs/{queued}").json()["status"] == "canceled"
+    monkeypatch.undo()
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo 3"}).json()["id"])
+    assert j["status"] == "done", j["error"]

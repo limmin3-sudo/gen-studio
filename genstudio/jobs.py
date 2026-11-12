@@ -514,6 +514,8 @@ class Engine:
         self._worker: asyncio.Task | None = None
         self._last_family: str | None = None
         self._running: str | None = None
+        self._task: asyncio.Task | None = None          # the running job, so a cancel can stop it between graphs too
+        self._cancel: set[str] = set()
         self._done_events: dict[str, asyncio.Event] = {}
 
     # ------------------------------------------------------------- control
@@ -1481,7 +1483,15 @@ class Engine:
             job.status, job.message = "canceled", "취소됨"
             self._finish(job)
             return True
-        await self.comfy.interrupt()
+        # running: stop ComfyUI's current graph and the job itself (uploads, translation, the next graph ...)
+        self._cancel.add(job_id)
+        job.message = "취소하는 중"
+        try:
+            await self.comfy.interrupt()
+        except Exception:  # noqa: BLE001 - ComfyUI gone: the job stops anyway
+            pass
+        if self._task and self._running == job_id and not self._task.done():
+            self._task.cancel()
         return True
 
     async def wait(self, job_id: str, timeout: float) -> Job:
@@ -1509,43 +1519,57 @@ class Engine:
             job.status, job.started_at, job.message = "running", time.time(), "준비 중"
             self._running = jid
             try:
-                await self._ease_memory(job)
-                if job.kind == "generate":
-                    await self._run_generate(job)
-                elif job.kind == "segment":
-                    await self._run_segment(job)
-                elif job.kind == "cutout":
-                    await self._run_cutout(job)
-                elif job.kind == "character":
-                    await self._run_character(job)
-                elif job.kind == "train":
-                    await self._run_train(job)
-                elif job.kind == "detail":
-                    await self._run_detail(job)
-                elif job.kind == "upscale":
-                    await self._run_upscale(job)
-                elif job.kind == "video":
-                    await self._run_video(job)
-                elif job.kind == "ltx":
-                    await self._run_ltx(job)
-                elif job.kind == "frame":
-                    await self._run_video_frame(job)
-                elif job.kind == "join":
-                    await self._run_join(job)
-                elif job.kind == "repose":
-                    await self._run_repose(job)
-                else:
-                    await self._run_edit(job)
+                self._task = asyncio.create_task(self._run_job(job))
+                await self._task
                 job.status, job.progress, job.message = "done", 1.0, "완료"
+            except asyncio.CancelledError:
+                if jid not in self._cancel:
+                    raise                                  # the worker itself is stopping
+                job.status, job.message = "canceled", "취소됨"
             except ComfyError as e:
-                job.status, job.error, job.message = "error", str(e), "실패"
-                log.warning("작업 실패 %s (%s): %s", job.id, job.kind, e)
+                if jid in self._cancel:
+                    job.status, job.message = "canceled", "취소됨"
+                else:
+                    job.status, job.error, job.message = "error", str(e), "실패"
+                    log.warning("작업 실패 %s (%s): %s", job.id, job.kind, e)
             except Exception as e:  # keep the worker alive no matter what
                 job.status, job.error, job.message = "error", f"{type(e).__name__}: {e}", "실패"
                 log.exception("작업 오류 %s (%s)", job.id, job.kind)
             finally:
                 self._running = None
+                self._task = None
+                self._cancel.discard(jid)
                 self._finish(job)
+
+    async def _run_job(self, job: Job) -> None:
+        """One job from start to end; runs as its own task so cancel() can stop it anywhere."""
+        await self._ease_memory(job)
+        if job.kind == "generate":
+            await self._run_generate(job)
+        elif job.kind == "segment":
+            await self._run_segment(job)
+        elif job.kind == "cutout":
+            await self._run_cutout(job)
+        elif job.kind == "character":
+            await self._run_character(job)
+        elif job.kind == "train":
+            await self._run_train(job)
+        elif job.kind == "detail":
+            await self._run_detail(job)
+        elif job.kind == "upscale":
+            await self._run_upscale(job)
+        elif job.kind == "video":
+            await self._run_video(job)
+        elif job.kind == "ltx":
+            await self._run_ltx(job)
+        elif job.kind == "frame":
+            await self._run_video_frame(job)
+        elif job.kind == "join":
+            await self._run_join(job)
+        elif job.kind == "repose":
+            await self._run_repose(job)
+        else:
+            await self._run_edit(job)
 
     def _finish(self, job: Job) -> None:
         job.finished_at = time.time()
