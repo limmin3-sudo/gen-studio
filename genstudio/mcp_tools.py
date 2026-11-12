@@ -40,9 +40,13 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
 - change_pose(image_id, pose_id or prompt) moves the person into a new pose, same person and background.
-- create_video(prompt, image_id=None, seconds=5) is the high-quality one: LTX-2.5 with sound, from text or an
-  image. Prefer it for finished clips; write a detailed English shot description including the audio.
-- image_to_video(image_id, prompt="how it moves") makes a 3-5 s mp4 clip (several minutes).
+- VIDEO: use create_video(prompt, image_id=None, seconds=5) — LTX-2.5 with sound, from text or an image — for
+  every clip the user will look at. Write a detailed English shot description: subject, action beat by beat,
+  camera, lighting, mood and the audio (dialogue in quotes, ambience, effects, music). It is slow (minutes to tens
+  of minutes): start it, tell the user, and poll get_job_status. If it says the LTX model is missing, tell the user
+  to download it in Gen Studio → 설정 → "Codex 전용 고성능 영상" (needs a Hugging Face token) and offer
+  image_to_video as a draft meanwhile.
+- image_to_video(image_id, prompt) is only a quick low-quality draft (Wan 2.2, 16 fps, no sound).
 - upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
@@ -361,11 +365,12 @@ def build_mcp(state: "State") -> MCPServer:
         return out
 
     @mcp.tool(description=(
-        "Turn an image into a short video clip (Wan 2.2 image-to-video). prompt: how things move, e.g. 'she turns "
-        "her head and smiles, hair moving in the wind' (empty = natural subtle motion). seconds 3 or 5, quality "
-        "480p (faster) or 720p. Takes several minutes: returns a job_id to poll; the result is an mp4 in the library."))
+        "QUICK DRAFT video from an image (Wan 2.2 14B DaSiWa, 4-step, 16 fps, no sound). Lower quality than "
+        "create_video: use it only for a fast preview or when the user asks for this model; for anything the user "
+        "will keep, call create_video instead. prompt: how things move, in English (empty = natural subtle motion). "
+        "seconds 3 or 5, quality 720p (default) or 480p. Returns a job_id to poll; the result is an mp4 in the library."))
     async def image_to_video(image_id: str | None = None, image_path: str | None = None, prompt: str = "",
-                             seconds: int = 5, quality: str = "480p", wait_seconds: int = 30):
+                             seconds: int = 5, quality: str = "720p", wait_seconds: int = 30):
         from .jobs import VideoRequest
         if not image_id:
             image_id = _bring_in(None, [image_path] if image_path else None)[0]
