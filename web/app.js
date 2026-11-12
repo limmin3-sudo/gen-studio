@@ -667,6 +667,13 @@ const Editor = (() => {
   let autoFill = store.get('autoFill', false);
   let detStrength = store.get('detStrength', 0.4), upRefine = store.get('upRefine', true);
   let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '720p'), reposeId = null, vidText = '', reposeText = '';
+  let vidSmooth = store.get('vidSmooth', true), vidKeys = {mid: null, end: null}, vidPick = null, vidRoot = null, joinSel = [];
+  $('#vidKeyIn').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f || !vidPick) return;
+    const fd = new FormData(); fd.append('file', f, f.name);
+    try { const r = await req('POST', '/api/import', fd); vidKeys[vidPick] = r.id; vidPick = null; paintPane(); }
+    catch (err) { toast(err.message); }
+  };
   $('#reposeIn').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     const fd = new FormData(); fd.append('file', f, f.name);
@@ -757,6 +764,7 @@ const Editor = (() => {
     let data;
     try { data = await api.get(`/api/images/${id}`); } catch (e) { toast(e.message); location.hash = 'gallery'; return; }
     rec = data; versions = data.versions || [rec];
+    if (rec.root_id !== vidRoot) { vidRoot = rec.root_id; vidKeys = {mid: null, end: null}; vidPick = null; joinSel = []; }
     pending = false; clearMask(false);
     $('#edTitle').textContent = rec.kind === 'import' ? '불러온 이미지' : (rec.prompt || '이미지');
     const model = MODELS.find(m => m.id === rec.model_id);
@@ -804,7 +812,15 @@ const Editor = (() => {
       pane.innerHTML = `<h2>영상</h2><dl class="kv">
         <dt>길이</dt><dd>${Number(rec.duration).toFixed(1)}초 · ${rec.fps}fps · ${rec.frames}프레임</dd><dt>크기</dt><dd>${rec.width}×${rec.height}</dd>
         ${rec.edit_prompt ? `<dt>움직임</dt><dd>${esc(rec.edit_prompt)}</dd>` : ''}${rec.seed !== undefined ? `<dt>시드</dt><dd>${rec.seed}</dd>` : ''}</dl>
-        <p class="note">영상은 편집할 수 없어요. 왼쪽 버전 목록에서 원본 이미지를 골라 다시 만들거나, 아래 재생성으로 새 시드로 다시 만들 수 있어요.</p>`;
+        <p class="note">영상은 편집할 수 없어요. 왼쪽 버전 목록에서 원본 이미지를 골라 다시 만들거나, 아래 재생성으로 새 시드로 다시 만들 수 있어요.</p>
+        <h2>장면 꺼내기</h2>
+        <p class="note">영상의 한 장면을 사진으로 저장해요. 마지막 장면에서 다음 영상을 시작하면 이야기를 이어 갈 수 있어요.</p>
+        <div class="field"><div class="seg2"><button data-vframe="first">첫 장면</button><button data-vframe="last">마지막 장면</button></div></div>`;
+      const others = versions.filter(v => v.media === 'video' && v.id !== rec.id);
+      if (others.length) pane.innerHTML += `<h2>이어 붙이기</h2>
+        <p class="note">이 영상 뒤에 붙일 영상을 순서대로 고르세요.</p>
+        <div class="vpick">${others.map(v => { const n = joinSel.indexOf(v.id); return `<button data-vjoin="${v.id}" aria-pressed="${n >= 0}"><img src="${thumbUrl(v.id)}" alt="">${n >= 0 ? `<i>${n + 2}</i>` : ''}</button>`; }).join('')}</div>
+        <div class="field"><div class="seg2"><button id="doJoin" aria-pressed="true" ${joinSel.length ? '' : 'disabled'}>${joinSel.length + 1}개 이어 붙이기</button></div></div>`;
       return;
     }
     let h = '';
@@ -840,11 +856,14 @@ const Editor = (() => {
         + acc('bg', '배경 제거', '투명·단색 배경', `
           <p class="note">사람이나 물건만 남기고 배경을 지웁니다. 새 버전으로 저장되고, PNG로 받으면 투명하게 남아요.</p>
           <div class="field"><div class="seg2"><button data-bg="transparent">투명</button><button data-bg="white">흰색</button><button data-bg="gray">회색</button><button data-bg="black">검정</button></div></div>`)
-        + acc('video', '영상 만들기', '3초·5초 움직이는 영상', `
+        + acc('video', '영상 만들기', '움직이는 영상 · 처음·가운데·끝 장면', `
           <textarea class="acct" id="vidText" rows="2" placeholder="어떻게 움직일지 적으세요. 예: 고개를 돌리며 웃는다, 머리카락이 바람에 날린다">${esc(vidText)}</textarea>
-          <p class="note">비워두면 자연스럽게 살짝 움직여요. 몇 분 걸려요.</p>
-          <div class="field"><span>길이</span><div class="seg2">${[3, 5].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div></div>
+          <p class="note">비워두면 자연스럽게 살짝 움직여요. 몇 분 걸려요. 지금 사진이 첫 장면이고, 가운데·마지막 장면을 고르면 그 사이를 이어서 움직여요.</p>
+          <div class="field"><span>장면</span><div class="vkeys">${[['mid', '가운데'], ['end', '마지막']].map(([k, n]) => `<div class="vkey"><span>${n}</span>${vidKeys[k] ? `<span class="ref"><img src="${thumbUrl(vidKeys[k])}" alt=""><button type="button" data-vclear="${k}" aria-label="${n} 장면 빼기">×</button></span>` : ''}<button data-vpick="${k}" aria-pressed="${vidPick === k}">${vidKeys[k] ? '바꾸기' : '고르기'}</button></div>`).join('')}</div>
+            ${vidPick ? `<div class="vpick">${versions.filter(v => v.media !== 'video' && v.id !== rec.id).map(v => `<button data-vset="${v.id}" title="${esc(v.label || '')}"><img src="${thumbUrl(v.id)}" alt=""></button>`).join('')}<button data-vup>사진 넣기</button></div>` : ''}</div>
+          <div class="field"><span>길이</span><div class="seg2">${[3, 5, 8, 10].map(n => `<button data-vsec="${n}" aria-pressed="${n === vidSec}">${n}초</button>`).join('')}</div>${vidSec > 5 && !vidKeys.mid ? '<p class="note" style="margin-top:6px">5초보다 길면 가운데 장면을 같이 고르는 게 자연스러워요.</p>' : ''}</div>
           <div class="field"><span>화질</span><div class="seg2">${['480p', '720p'].map(q => `<button data-vq="${q}" aria-pressed="${q === vidQ}">${q}${q === '720p' ? ' (느림)' : ''}</button>`).join('')}</div></div>
+          <label class="switch" style="margin:0 0 14px"><input type="checkbox" id="vidSmooth" ${vidSmooth ? 'checked' : ''}><span>부드럽게 (프레임 보간 16→32fps)</span></label>
           <div class="field"><div class="seg2"><button id="makeVideo" aria-pressed="true">영상 만들기</button></div></div>`)
         + acc('repose', '자세 바꾸기', '같은 사람·옷·배경, 자세만', `
           <textarea class="acct" id="reposeText" rows="2" placeholder="어떤 자세로 바꿀지 적으세요. 예: 침대에 앉아 다리를 꼬고 있다">${esc(reposeText)}</textarea>
@@ -890,6 +909,7 @@ const Editor = (() => {
   pane.addEventListener('change', e => {
     if (e.target.id === 'autoFillToggle') setAutoFill(e.target.checked);
     if (e.target.id === 'upRefine') { upRefine = e.target.checked; store.set('upRefine', upRefine); }
+    if (e.target.id === 'vidSmooth') { vidSmooth = e.target.checked; store.set('vidSmooth', vidSmooth); }
   });
   pane.addEventListener('click', e => {
     const g = e.target.closest('[data-goto]'); if (g) setTool(g.dataset.goto);
@@ -915,6 +935,22 @@ const Editor = (() => {
     const vs = e.target.closest('[data-vsec]'); if (vs) { vidSec = +vs.dataset.vsec; store.set('vidSec', vidSec); paintPane(); return; }
     const vq = e.target.closest('[data-vq]'); if (vq) { vidQ = vq.dataset.vq; store.set('vidQ', vidQ); paintPane(); return; }
     if (e.target.closest('#makeVideo')) { makeVideo(); return; }
+    const vp = e.target.closest('[data-vpick]'); if (vp) { vidPick = vidPick === vp.dataset.vpick ? null : vp.dataset.vpick; paintPane(); return; }
+    const vset = e.target.closest('[data-vset]'); if (vset && vidPick) { vidKeys[vidPick] = vset.dataset.vset; vidPick = null; paintPane(); return; }
+    if (e.target.closest('[data-vup]')) { $('#vidKeyIn').click(); return; }
+    const vc = e.target.closest('[data-vclear]'); if (vc) { vidKeys[vc.dataset.vclear] = null; paintPane(); return; }
+    const vf = e.target.closest('[data-vframe]');
+    if (vf && rec && !busy) {
+      api.post(`/api/videos/${rec.id}/frame`, {at: vf.dataset.vframe}).then(j => runJob(j, j.decision.action)).catch(err => toast(err.message, 6000));
+      return;
+    }
+    const vj = e.target.closest('[data-vjoin]');
+    if (vj) { const i = joinSel.indexOf(vj.dataset.vjoin); i >= 0 ? joinSel.splice(i, 1) : joinSel.push(vj.dataset.vjoin); paintPane(); return; }
+    if (e.target.closest('#doJoin') && rec && !busy && joinSel.length) {
+      api.post('/api/videos/join', {video_ids: [rec.id, ...joinSel]})
+        .then(j => { joinSel = []; return runJob(j, j.decision.action); }).catch(err => toast(err.message, 6000));
+      return;
+    }
     const up = e.target.closest('[data-up]');
     if (up && rec && !busy) {
       api.post(`/api/images/${rec.id}/upscale`, {scale: +up.dataset.up, refine: upRefine, prompt: promptEl.value.trim()})
@@ -1260,7 +1296,9 @@ const Editor = (() => {
     if (!rec || busy) return;
     if (rec.media === 'video') { toast('영상에서 다시 영상을 만들 수는 없어요. 원본 이미지를 고르세요.'); return; }
     try {
-      const j = await api.post(`/api/images/${rec.id}/video`, {prompt: (vidText || promptEl.value).trim(), seconds: vidSec, quality: vidQ});
+      if (vidKeys.mid && !vidKeys.end) { toast('가운데 장면을 쓰려면 마지막 장면도 골라 주세요'); return; }
+      const j = await api.post(`/api/images/${rec.id}/video`, {prompt: (vidText || promptEl.value).trim(), seconds: vidSec, quality: vidQ,
+        smooth: vidSmooth, end_image_id: vidKeys.end, mid_image_id: vidKeys.mid});
       await runJob(j, `${j.decision.action} · ${j.decision.width}×${j.decision.height} · Wan 2.2`);
     } catch (e) { toast(e.message, 6000); }
   }

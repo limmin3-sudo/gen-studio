@@ -19,7 +19,7 @@ def test_mcp_initialize_and_list_tools(client):
     tools = {t["name"] for t in rpc(client, "tools/list")["tools"]}
     assert tools == {"generate_image", "edit_image", "get_job_status", "get_image", "list_images", "list_models",
                      "create_character", "list_characters", "export_image", "segment_image", "recommend_model",
-                     "open_editor", "panel_state", "list_loras", "add_lora", "remove_background", "build_character", "train_lora", "fix_details", "upscale_image", "get_diagnostics", "image_to_video", "change_pose", "create_video"}
+                     "open_editor", "panel_state", "list_loras", "add_lora", "remove_background", "build_character", "train_lora", "fix_details", "upscale_image", "get_diagnostics", "image_to_video", "change_pose", "create_video", "get_video_frame", "join_videos"}
 
 
 def test_mcp_generate_returns_image_then_edit(client):

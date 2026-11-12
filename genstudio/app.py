@@ -16,7 +16,7 @@ from .app_routes import set_remote  # noqa: F401  (used by the desktop tray)
 from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
-from .jobs import CharacterBuildRequest, CutoutRequest, LtxRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, JoinVideosRequest, LtxRequest, VideoFrameRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -288,12 +288,27 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
 
+    @app.post("/api/videos/{video_id}/frame")
+    async def video_frame(video_id: str, body: dict | None = None):
+        """One frame of a clip as a new picture (to start the next clip from, or to edit)."""
+        try:
+            return engine.submit_video_frame(VideoFrameRequest(video_id=video_id, **(body or {}))).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    @app.post("/api/videos/join")
+    async def join_videos(body: dict):
+        try:
+            return engine.submit_join(JoinVideosRequest(**body)).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
     @app.post("/api/images/{image_id}/video")
     async def make_video(image_id: str, body: dict | None = None):
         body = body or {}
         try:
             return engine.submit_video(VideoRequest(image_id=image_id, **{k: v for k, v in body.items()
-                                                                         if k in ("prompt", "seconds", "quality", "seed", "smooth")})).public()
+                                                                         if k in VideoRequest.model_fields and k != "image_id"})).public()
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
         except ValueError as e:

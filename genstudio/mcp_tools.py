@@ -46,7 +46,13 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   of minutes): start it, tell the user, and poll get_job_status. If it says the LTX model is missing, tell the user
   to download it in Gen Studio → 설정 → "Codex 전용 고성능 영상" (needs a Hugging Face token) and offer
   image_to_video as a draft meanwhile.
-- image_to_video(image_id, prompt) is only a quick low-quality draft (Wan 2.2, 16 fps, no sound).
+- Keyframes: create_video(image_id=start, mid_image_id=..., end_image_id=..., keyframes=[{"image_id":..,"at":3.5}])
+  pins pictures to moments; make the stills first (generate_image / edit_image / change_pose), then animate between
+  them. Everything is adjustable: width/height, seconds (2-20), fps, image_strength, audio on/off, negative, seed.
+- Longer films: get_video_frame(video_id, "last") gives the last frame as an image, start the next clip from it,
+  then join_videos([clip1, clip2, ...]) makes one file (sound included).
+- image_to_video(image_id, prompt) is a quicker Wan 2.2 clip (no sound); it also takes end_image_id/mid_image_id,
+  size, steps and smoothing (frame interpolation x2-x4).
 - upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
@@ -174,6 +180,9 @@ def build_mcp(state: "State") -> MCPServer:
             data = b.split(",", 1)[1] if b.startswith("data:") else b
             out_ids.append(state.library.import_image(base64.b64decode(data), "mcp-upload.png")["id"])
         return out_ids
+
+    def _one(iid: str | None, path: str | None) -> str | None:
+        return iid or (_bring_in(None, [path])[0] if path else None)
 
     async def _finish(job, wait_seconds: int, include_image: bool):
         job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
@@ -342,18 +351,30 @@ def build_mcp(state: "State") -> MCPServer:
         "as the first shot. Slow (several minutes to tens of minutes on the home GPU) but much better than "
         "image_to_video. Write the prompt like a shot description in English: subject and look, action beat by beat, "
         "camera (angle, lens, movement), lighting, mood, and the sound (dialogue in quotes with who says it, "
-        "ambience, effects, music). seconds 2-10, quality 540p/720p, orientation auto/landscape/portrait/square. "
+        "ambience, effects, music). "
+        "Keyframes: image_id = first shot, end_image_id = last shot, mid_image_id = the middle, keyframes = "
+        "[{image_id, at: seconds}] for any other moments (each id may instead be a file path in *_path / "
+        "keyframes[].path). With keyframes it runs ComfyUI's First & Last Frame recipe (one pass, full size). "
+        "Knobs: seconds 2-20 (over 10 is slow and tight on 16GB), quality 540p/720p or width/height directly "
+        "(multiples of 64), orientation auto/landscape/portrait/square, fps 12-50 (24 default), image_strength "
+        "0.1-1 (how strictly the pictures are followed, 0.7 default), audio true/false, negative, seed. "
         "Returns a job_id: poll get_job_status; the finished mp4 path is in the result (export_image copies it)."))
     async def create_video(prompt: str, image_id: str | None = None, image_path: str | None = None, seconds: int = 5,
                            quality: str = "720p", orientation: str = "auto", negative: str = "", seed: int = -1,
-                           wait_seconds: int = 30):
+                           end_image_id: str | None = None, end_image_path: str | None = None,
+                           mid_image_id: str | None = None, mid_image_path: str | None = None,
+                           keyframes: list[dict] | None = None, width: int | None = None, height: int | None = None,
+                           fps: int = 24, image_strength: float = 0.7, audio: bool = True, wait_seconds: int = 30):
         from .jobs import LtxRequest
-        if image_path and not image_id:
-            image_id = _bring_in(None, [image_path])[0]
+        image_id = _one(image_id, image_path)
+        keys = [{"image_id": _one(k.get("image_id"), k.get("path")), "at": float(k.get("at", 0))}
+                for k in keyframes or []]
         job = state.engine.submit_ltx(LtxRequest(
-            prompt=prompt, image_id=image_id, seconds=max(2, min(int(seconds), 10)),
+            prompt=prompt, image_id=image_id, end_image_id=_one(end_image_id, end_image_path),
+            mid_image_id=_one(mid_image_id, mid_image_path), keyframes=keys, seconds=max(2, min(int(seconds), 20)),
             quality="540p" if str(quality).startswith("540") else "720p",
             orientation=orientation if orientation in ("auto", "landscape", "portrait", "square") else "auto",
+            width=width, height=height, fps=fps, image_strength=image_strength, audio=audio,
             negative=negative, seed=seed))
         job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
         out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
@@ -365,17 +386,28 @@ def build_mcp(state: "State") -> MCPServer:
         return out
 
     @mcp.tool(description=(
-        "QUICK DRAFT video from an image (Wan 2.2 14B DaSiWa, 4-step, 16 fps, no sound). Lower quality than "
-        "create_video: use it only for a fast preview or when the user asks for this model; for anything the user "
-        "will keep, call create_video instead. prompt: how things move, in English (empty = natural subtle motion). "
-        "seconds 3 or 5, quality 720p (default) or 480p. Returns a job_id to poll; the result is an mp4 in the library."))
+        "Quicker video from an image (Wan 2.2 14B DaSiWa, 16 fps, no sound). Lower quality than create_video: use "
+        "it for a fast preview or when the user asks for this model. prompt: how things move, in English (empty = "
+        "natural subtle motion). end_image_id / end_image_path = last shot; mid_image_id / mid_image_path = middle "
+        "shot (needs an end shot; two halves are made and joined). seconds 2-10 (5 is what the model knows best; "
+        "with a middle shot up to 10 stays natural), quality 720p (default) or 480p, or width/height directly "
+        "(multiples of 16), steps 2-30 (4 default), smooth = frame interpolation on/off, smooth_multiplier 2-4 "
+        "(32/48/64 fps), negative, seed. Returns a job_id to poll; the result is an mp4 in the library."))
     async def image_to_video(image_id: str | None = None, image_path: str | None = None, prompt: str = "",
-                             seconds: int = 5, quality: str = "720p", wait_seconds: int = 30):
+                             seconds: int = 5, quality: str = "720p", end_image_id: str | None = None,
+                             end_image_path: str | None = None, mid_image_id: str | None = None,
+                             mid_image_path: str | None = None, width: int | None = None, height: int | None = None,
+                             steps: int = 4, smooth: bool = True, smooth_multiplier: int = 2, negative: str = "",
+                             seed: int = -1, wait_seconds: int = 30):
         from .jobs import VideoRequest
         if not image_id:
             image_id = _bring_in(None, [image_path] if image_path else None)[0]
-        job = state.engine.submit_video(VideoRequest(image_id=image_id, prompt=prompt, seconds=3 if seconds <= 3 else 5,
-                                                     quality="720p" if str(quality).startswith("720") else "480p"))
+        job = state.engine.submit_video(VideoRequest(
+            image_id=image_id, prompt=prompt, seconds=max(2, min(int(seconds), 10)),
+            quality="720p" if str(quality).startswith("720") else "480p",
+            end_image_id=_one(end_image_id, end_image_path), mid_image_id=_one(mid_image_id, mid_image_path),
+            width=width, height=height, steps=steps, smooth=smooth, smooth_multiplier=max(2, min(int(smooth_multiplier), 4)),
+            negative=negative, seed=seed))
         job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
         out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
                "decision": job.decision}
@@ -383,6 +415,30 @@ def build_mcp(state: "State") -> MCPServer:
             out["video"] = _info(job.result_ids[0])
         else:
             out["next"] = "영상은 몇 분 걸려요. get_job_status(job_id)로 확인하세요."
+        return out
+
+    @mcp.tool(description=(
+        "Take one frame out of a video as a new image: at = 'first', 'last' (default) or a time in seconds. Use the "
+        "last frame as the first shot of the next clip to continue a scene, or edit it like any picture."))
+    async def get_video_frame(video_id: str, at: str | float = "last", wait_seconds: int = 60,
+                              include_image: bool = True):
+        from .jobs import VideoFrameRequest
+        a = at if at in ("first", "last") else float(at)
+        job = state.engine.submit_video_frame(VideoFrameRequest(video_id=video_id, at=a))
+        return await _finish(job, wait_seconds, include_image)
+
+    @mcp.tool(description=(
+        "Join clips one after another into one mp4 (2-20 video ids, in order). Later clips are scaled to the first "
+        "one's size; the first clip's fps is used, so join clips made the same way. audio: keep the sound (default: "
+        "only when every clip has sound)."))
+    async def join_videos(video_ids: list[str], audio: bool | None = None, wait_seconds: int = 60):
+        from .jobs import JoinVideosRequest
+        job = state.engine.submit_join(JoinVideosRequest(video_ids=video_ids, audio=audio))
+        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
+        out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
+               "decision": job.decision}
+        if job.status == "done":
+            out["video"] = _info(job.result_ids[0])
         return out
 
     @mcp.tool(description=(

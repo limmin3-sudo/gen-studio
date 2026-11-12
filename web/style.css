@@ -355,3 +355,16 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 
 .scard .steps{margin:6px 0;padding-left:20px;font-size:13px;line-height:1.55}
 .scard .steps a{color:var(--accent)}
+
+/* video keyframes + join */
+.vkeys{display:flex;gap:14px;flex-wrap:wrap}
+.vkey{display:flex;align-items:center;gap:8px}
+.vkey>span:first-child{font-size:13px;color:var(--muted)}
+.vkey [data-vpick]{height:34px;padding:0 14px;border-radius:17px;background:var(--chip);font-size:14px}
+.vkey [data-vpick][aria-pressed="true"]{background:var(--ink);color:var(--ink-fg)}
+.vpick{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.vpick button{position:relative;width:52px;height:52px;border-radius:10px;overflow:hidden;background:var(--chip);padding:0;font-size:12px}
+.vpick button img{width:100%;height:100%;object-fit:cover;display:block}
+.vpick button[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:1px}
+.vpick button i{position:absolute;left:3px;bottom:2px;font-style:normal;font-size:12px;color:#fff;text-shadow:0 1px 2px #000}
+.vpick [data-vup]{width:auto;padding:0 10px}

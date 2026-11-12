@@ -169,3 +169,42 @@ def test_ltx_video_for_codex(client, settings, fake, monkeypatch, tmp_path):
     assert [n["inputs"]["strength"] for n in g.values() if n["class_type"] == "LTXVImgToVideoInplace"] == [0.7, 1.0]
     r2 = wait_job(client, client.post(f"/api/images/{j2['result_ids'][0]}/regenerate").json()["id"])
     assert r2["kind"] == "ltx" and r2["status"] == "done"
+
+
+def test_ltx_keyframes_and_knobs(client, settings, fake, tmp_path):
+    """Start / middle / end / any second: ComfyUI's First & Last Frame recipe (one pass, LTXVAddGuide per picture)."""
+    from test_api import wait_job
+    from genstudio.config import CONFIG_DIR
+    from genstudio.registry import Registry
+    reg = Registry.load(CONFIG_DIR / "models.yaml")
+    eng = client.app.state.gs.engine
+    eng.registry.tools["video_ltx"] = reg.tools["video_ltx"]
+    settings.comfy_path = tmp_path / "ComfyUI"
+    for f in reg.tools["video_ltx"]:
+        f.path(settings.models_dir).parent.mkdir(parents=True, exist_ok=True)
+        f.path(settings.models_dir).write_bytes(b"x")
+    ids = [wait_job(client, client.post("/api/generate", json={"prompt": "photo", "aspect": "landscape"}).json()["id"])
+           ["result_ids"][0] for _ in range(4)]
+    j = wait_job(client, client.post("/api/ltx", json={
+        "prompt": "she walks to the window", "image_id": ids[0], "mid_image_id": ids[1], "end_image_id": ids[2],
+        "keyframes": [{"image_id": ids[3], "at": 1.5}], "seconds": 6, "fps": 30, "image_strength": 0.5,
+        "audio": False, "width": 1000}).json()["id"])
+    assert j["status"] == "done", j["error"]
+    d = j["decision"]
+    assert d["mode"] == "keyframes" and d["fps"] == 30 and d["frames"] == 181 and d["width"] == 1024
+    assert [(x["image_id"], x["frame"]) for x in d["guides"]] == [(ids[0], 0), (ids[3], 45), (ids[1], 90), (ids[2], -1)]
+    g = list(fake.prompts.values())[-1]
+    kinds = [n["class_type"] for n in g.values()]
+    assert kinds.count("SamplerCustomAdvanced") == 1 and "LTXVCropGuides" in kinds and "LTXVLatentUpsampler" not in kinds
+    assert "LTXVAudioVAEDecode" not in kinds and "audio" not in next(n for n in g.values() if n["class_type"] == "CreateVideo")["inputs"]
+    guides = [n["inputs"] for n in g.values() if n["class_type"] == "LTXVAddGuide"]
+    assert [x["frame_idx"] for x in guides] == [0, 45, 90, -1] and {x["strength"] for x in guides} == {0.5}
+    assert next(n for n in g.values() if n["class_type"] == "LTXVConditioning")["inputs"]["frame_rate"] == 30.0
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert rec["audio"] is False and rec["fps"] == 30 and rec["duration"] == 6.0
+    r = wait_job(client, client.post(f"/api/images/{rec['id']}/regenerate").json()["id"])
+    assert r["status"] == "done" and r["decision"]["mode"] == "keyframes"
+    # only an end picture still works (text start)
+    j = wait_job(client, client.post("/api/ltx", json={"prompt": "x", "end_image_id": ids[2]}).json()["id"])
+    assert j["status"] == "done" and j["decision"]["guides"] == [{"image_id": ids[2], "frame": -1}]
+    assert client.post("/api/ltx", json={"prompt": "x", "end_image_id": "nope"}).status_code == 404

@@ -91,3 +91,53 @@ def _png(w, h):
     b = io.BytesIO()
     Image.new("RGB", (w, h), (50, 50, 50)).save(b, "PNG")
     return b.getvalue()
+
+
+def test_wan_keyframes_and_knobs(real, fake):
+    """First + last shot (WanFirstLastFrameToVideo); with a middle shot two halves are made and joined."""
+    a, b, c = (real.post("/api/import", files={"file": (f"{n}.png", _png(900, 1600), "image/png")}).json()["id"]
+               for n in "abc")
+    assert real.post(f"/api/images/{a}/video", json={"mid_image_id": b}).status_code == 400   # middle needs an end
+    v = wait_job(real, real.post(f"/api/images/{a}/video", json={
+        "end_image_id": c, "steps": 8, "smooth_multiplier": 3, "width": 480, "negative": "blurry"}).json()["id"])
+    assert v["status"] == "done", v["error"]
+    d = v["decision"]
+    assert d["width"] == 480 and d["height"] % 16 == 0 and d["height"] > 800 and d["fps"] == 48 and "처음·끝" in d["action"]
+    g = list(fake.prompts.values())[-1]
+    flf = [n["inputs"] for n in g.values() if n["class_type"] == "WanFirstLastFrameToVideo"]
+    assert len(flf) == 1 and flf[0]["length"] == 81 and "end_image" in flf[0]
+    ks = [n["inputs"] for n in g.values() if n["class_type"] == "KSamplerAdvanced"]
+    assert [(k["steps"], k["start_at_step"], k["end_at_step"]) for k in ks] == [(8, 0, 4), (8, 4, 10000)]
+    assert next(n for n in g.values() if n["class_type"] == "FrameInterpolate")["inputs"]["multiplier"] == 3
+    rec = real.get(f"/api/images/{v['result_ids'][0]}").json()
+    assert rec["frames"] == 241 and rec["keyframes"] == [c]
+
+    v = wait_job(real, real.post(f"/api/images/{a}/video", json={"end_image_id": c, "mid_image_id": b,
+                                                                 "seconds": 10, "smooth": False}).json()["id"])
+    assert v["status"] == "done", v["error"]
+    assert v["decision"]["frames"] == 161
+    g = list(fake.prompts.values())[-1]
+    flf = [n["inputs"] for n in g.values() if n["class_type"] == "WanFirstLastFrameToVideo"]
+    assert [f["length"] for f in flf] == [81, 81]
+    assert any(n["class_type"] == "BatchImagesNode" for n in g.values())
+    # regenerate keeps the keyframes
+    r = wait_job(real, real.post(f"/api/images/{v['result_ids'][0]}/regenerate").json()["id"])
+    assert r["status"] == "done" and r["request"]["mid_image_id"] == b
+
+    # last frame out as a picture, then the two clips joined
+    clip1, clip2 = v["result_ids"][0], r["result_ids"][0]
+    f = wait_job(real, real.post(f"/api/videos/{clip1}/frame", json={"at": "last"}).json()["id"])
+    assert f["status"] == "done", f["error"]
+    g = list(fake.prompts.values())[-1]
+    assert next(n for n in g.values() if n["class_type"] == "ImageFromBatch")["inputs"]["batch_index"] == 160
+    assert next(n for n in g.values() if n["class_type"] == "LoadVideo")["inputs"]["file"].startswith("gs-clip-")
+    frame = real.get(f"/api/images/{f['result_ids'][0]}").json()
+    assert frame.get("media") != "video" and frame["parent_id"] == clip1
+    assert real.post(f"/api/videos/{a}/frame", json={}).status_code == 400                     # not a clip
+    j = wait_job(real, real.post("/api/videos/join", json={"video_ids": [clip1, clip2]}).json()["id"])
+    assert j["status"] == "done", j["error"]
+    g = list(fake.prompts.values())[-1]
+    assert sum(n["class_type"] == "LoadVideo" for n in g.values()) == 2
+    assert not any(n["class_type"] == "AudioConcat" for n in g.values())                      # Wan clips are silent
+    joined = real.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert joined["media"] == "video" and joined["joined"] == [clip1, clip2] and joined["duration"] == 20.0

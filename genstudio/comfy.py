@@ -59,7 +59,9 @@ class ComfyClient:
         return r.json()
 
     async def upload_image(self, data: bytes, filename: str, subfolder: str = "gen-studio") -> str:
-        files = {"image": (filename, data, "image/png")}
+        mime = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}.get(
+            filename[filename.rfind("."):].lower(), "image/png")
+        files = {"image": (filename, data, mime)}
         r = await self._req("POST", "/upload/image", files=files, data={"subfolder": subfolder, "overwrite": "true", "type": "input"})
         if r.status_code != 200:
             raise ComfyError(f"이미지 업로드 실패 ({r.status_code}): {r.text[:200]}")

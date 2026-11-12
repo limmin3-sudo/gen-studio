@@ -367,12 +367,20 @@ WAN_NEGATIVE = ("色调艳丽，过曝，静态，细节模糊不清，字幕，
                 "背景人很多，倒着走")
 
 
+def wan_half_length(frames: int) -> int:
+    """Frames for each half when a middle picture splits the clip (Wan lengths are 4*n + 1)."""
+    return max(5, ((frames // 2) // 4) * 4 + 1)
+
+
 def image_to_video(image_name: str, files: list[str], prompt: str, negative: str, width: int, height: int,
                    frames: int, seed: int, fps: int = 16, prefix: str = "gen-studio/video",
-                   interp_file: str | None = None, interp_multiplier: int = 2) -> dict:
+                   interp_file: str | None = None, interp_multiplier: int = 2,
+                   end_name: str | None = None, mid_name: str | None = None, steps: int = 4) -> dict:
     """Wan 2.2 I2V 14B, 4 steps (ComfyUI's official "Image to Video (Wan 2.2)" template).
     files: high, low, text encoder, vae, and optionally the two speed-up LoRAs (high, low) for the official
-    weights; tuned models with the speed-up already baked in (e.g. DaSiWa Lightspeed) come without them."""
+    weights; tuned models with the speed-up already baked in (e.g. DaSiWa Lightspeed) come without them.
+    end_name: last picture (WanFirstLastFrameToVideo instead of WanImageToVideo).
+    mid_name: a picture for the middle; the clip is made as two halves (start→middle, middle→end) and joined."""
     high, low, te, vae = files[:4]
     l_high, l_low = (files[4], files[5]) if len(files) >= 6 else (None, None)
     g = Graph()
@@ -388,16 +396,34 @@ def image_to_video(image_name: str, files: list[str], prompt: str, negative: str
     mh, ml = expert(high, l_high), expert(low, l_low)
     pos = out(g.add("CLIPTextEncode", text=prompt, clip=clip))
     neg = out(g.add("CLIPTextEncode", text=negative or WAN_NEGATIVE, clip=clip))
-    start = out(g.add("LoadImage", image=image_name))
-    i2v = g.add("WanImageToVideo", positive=pos, negative=neg, vae=v, width=int(width), height=int(height),
-                length=int(frames), batch_size=1, start_image=start)
-    a = g.add("KSamplerAdvanced", model=mh, add_noise="enable", noise_seed=int(seed), steps=4, cfg=1.0,
-              sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
-              latent_image=out(i2v, 2), start_at_step=0, end_at_step=2, return_with_leftover_noise="enable")
-    b = g.add("KSamplerAdvanced", model=ml, add_noise="disable", noise_seed=int(seed), steps=4, cfg=1.0,
-              sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
-              latent_image=out(a), start_at_step=2, end_at_step=10000, return_with_leftover_noise="disable")
-    frames_img = out(g.add("VAEDecode", samples=out(b), vae=v))
+
+    def segment(first: str, last: str | None, length: int, seg_seed: int):
+        start = out(g.add("LoadImage", image=first))
+        if last:
+            i2v = g.add("WanFirstLastFrameToVideo", positive=pos, negative=neg, vae=v, width=int(width),
+                        height=int(height), length=int(length), batch_size=1, start_image=start,
+                        end_image=out(g.add("LoadImage", image=last)))
+        else:
+            i2v = g.add("WanImageToVideo", positive=pos, negative=neg, vae=v, width=int(width), height=int(height),
+                        length=int(length), batch_size=1, start_image=start)
+        n, half = int(steps), int(steps) // 2
+        a = g.add("KSamplerAdvanced", model=mh, add_noise="enable", noise_seed=int(seg_seed), steps=n, cfg=1.0,
+                  sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
+                  latent_image=out(i2v, 2), start_at_step=0, end_at_step=half, return_with_leftover_noise="enable")
+        b = g.add("KSamplerAdvanced", model=ml, add_noise="disable", noise_seed=int(seg_seed), steps=n, cfg=1.0,
+                  sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
+                  latent_image=out(a), start_at_step=half, end_at_step=10000, return_with_leftover_noise="disable")
+        return out(g.add("VAEDecode", samples=out(b), vae=v))
+
+    if mid_name:
+        half = wan_half_length(frames)
+        first_half = segment(image_name, mid_name, half, seed)
+        second_half = segment(mid_name, end_name, half, seed + 1)
+        # the second half starts on the middle picture, which the first half already ends on
+        second_half = out(g.add("ImageFromBatch", image=second_half, batch_index=1, length=4096))
+        frames_img = out(g.add("BatchImagesNode", **{"images.image0": first_half, "images.image1": second_half}))
+    else:
+        frames_img = segment(image_name, end_name, frames, seed)
     if interp_file:
         # FILM fills in frames between Wan's 16 per second (ComfyUI's "Frame Interpolation" template)
         im = out(g.add("FrameInterpolationModelLoader", model_name=interp_file))
@@ -413,9 +439,77 @@ LTX_SIGMAS_1 = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875,
 LTX_SIGMAS_2 = "0.85, 0.7250, 0.4219, 0.0"
 
 
+def ltx_keyframes(prompt: str, files: dict, width: int, height: int, seconds: int, seed: int,
+                  guides: list[tuple[str, int]], *, negative: str = "", fps: int = 24, strength: float = 0.7,
+                  audio: bool = True, prefix: str = "gen-studio/ltx") -> dict:
+    """Pictures pinned to frames (start = 0, end = -1, anything in between), as in ComfyUI's official
+    "First & Last Frame to Video (LTX-2.5)" template: one pass at full size with LTXVAddGuide per picture,
+    SamplerEulerAncestral (eta 0), then LTXVCropGuides before decoding. The template's negative prompt is written
+    for its own sample scene, so the general one from the Image to Video template is used instead."""
+    g = Graph()
+    model = out(g.add("UNETLoader", unet_name=files["transformer"], weight_dtype="default"))
+    clip = out(g.add("CLIPLoader", clip_name=files["text_encoder"], type="ltxv", device="default"))
+    vae = out(g.add("VAELoader", vae_name=files["video_vae"]))
+    avae = out(g.add("VAELoader", vae_name=files["audio_vae"]))
+    pos = out(g.add("CLIPTextEncode", text=prompt, clip=clip))
+    neg = out(g.add("CLIPTextEncode", text=negative or LTX_NEGATIVE, clip=clip))
+    cond = g.add("LTXVConditioning", positive=pos, negative=neg, frame_rate=float(fps))
+    length = int(seconds) * int(fps) + 1
+    p_, n_ = out(cond, 0), out(cond, 1)
+    latent = out(g.add("EmptyLTXVLatentVideo", width=int(width), height=int(height), length=length, batch_size=1))
+    for name, idx in guides:
+        img = out(g.add("LTXVPreprocess", image=out(g.add("LoadImage", image=name)), img_compression=18))
+        ag = g.add("LTXVAddGuide", positive=p_, negative=n_, vae=vae, latent=latent, image=img,
+                   frame_idx=int(idx), strength=float(strength))
+        p_, n_, latent = out(ag, 0), out(ag, 1), out(ag, 2)
+    alat = out(g.add("LTXVEmptyLatentAudio", audio_vae=avae, frames_number=length, frame_rate=int(fps), batch_size=1))
+    av = out(g.add("LTXVConcatAVLatent", video_latent=latent, audio_latent=alat))
+    guider = out(g.add("LTXVDualCFGGuider", model=model, positive=p_, negative=n_, video_cfg=1.0, audio_cfg=1.0))
+    smp = g.add("SamplerCustomAdvanced", noise=out(g.add("RandomNoise", noise_seed=int(seed))), guider=guider,
+                sampler=out(g.add("SamplerEulerAncestral", eta=0.0, s_noise=1.0)),
+                sigmas=out(g.add("ManualSigmas", sigmas=LTX_SIGMAS_1)), latent_image=av)
+    sep = g.add("LTXVSeparateAVLatent", av_latent=out(smp, 1))
+    crop = g.add("LTXVCropGuides", positive=p_, negative=n_, latent=out(sep, 0))
+    frames = out(g.add("VAEDecodeTiled", samples=out(crop, 2), vae=vae, tile_size=512, overlap=64,
+                       temporal_size=64, temporal_overlap=16))
+    extra = {"audio": out(g.add("LTXVAudioVAEDecode", samples=out(sep, 1), audio_vae=avae))} if audio else {}
+    clip_video = out(g.add("CreateVideo", images=frames, fps=float(fps), **extra))
+    g.add("SaveVideo", video=clip_video, filename_prefix=prefix, **{"format": "mp4", "format.codec": "auto"})
+    g.add("SaveImage", filename_prefix=prefix + "-poster",
+          images=out(g.add("ImageFromBatch", image=frames, batch_index=0, length=1)))
+    return g.nodes
+
+
+def video_frame(video_name: str, index: int, prefix: str = "gen-studio/frame") -> dict:
+    """One frame of a clip as a picture (index -1 = last)."""
+    g = Graph()
+    comp = g.add("GetVideoComponents", video=out(g.add("LoadVideo", file=video_name)))
+    g.add("SaveImage", filename_prefix=prefix,
+          images=out(g.add("ImageFromBatch", image=out(comp, 0), batch_index=int(index), length=1)))
+    return g.nodes
+
+
+def join_videos(video_names: list[str], fps: float, audio: bool, prefix: str = "gen-studio/joined") -> dict:
+    """Clips one after another in one file (later clips are scaled to the first one's size)."""
+    g = Graph()
+    comps = [g.add("GetVideoComponents", video=out(g.add("LoadVideo", file=n))) for n in video_names]
+    images = out(g.add("BatchImagesNode", **{f"images.image{i}": out(c, 0) for i, c in enumerate(comps)}))
+    extra = {}
+    if audio:
+        sound = out(comps[0], 1)
+        for c in comps[1:]:
+            sound = out(g.add("AudioConcat", audio1=out(c, 1), audio2=sound, direction="after"))
+        extra["audio"] = sound
+    video = out(g.add("CreateVideo", images=images, fps=float(fps), **extra))
+    g.add("SaveVideo", video=video, filename_prefix=prefix, **{"format": "mp4", "format.codec": "auto"})
+    g.add("SaveImage", filename_prefix=prefix + "-poster",
+          images=out(g.add("ImageFromBatch", image=images, batch_index=0, length=1)))
+    return g.nodes
+
+
 def ltx_video(prompt: str, files: dict, width: int, height: int, seconds: int, seed: int, *,
-              image_name: str | None = None, negative: str = "", fps: int = 24,
-              prefix: str = "gen-studio/ltx") -> dict:
+              image_name: str | None = None, negative: str = "", fps: int = 24, strength: float = 0.7,
+              audio: bool = True, prefix: str = "gen-studio/ltx") -> dict:
     """LTX-2.5 22B text/image to video with sound, as in ComfyUI's official "Image to Video (LTX-2.5)" and
     "Text to Video (LTX-2.5)" templates: a first pass at half size, the latent upscaled 2x, a short second pass,
     then the frames and the audio are decoded and muxed. The templates' optional prompt-rewrite step (Gemma 4 E2B)
@@ -445,7 +539,8 @@ def ltx_video(prompt: str, files: dict, width: int, height: int, seconds: int, s
     video = out(g.add("EmptyLTXVLatentVideo", width=int(width) // 2, height=int(height) // 2, length=length,
                       batch_size=1))
     if img is not None:
-        video = out(g.add("LTXVImgToVideoInplace", vae=vae, image=img, latent=video, strength=0.7, bypass=False))
+        video = out(g.add("LTXVImgToVideoInplace", vae=vae, image=img, latent=video, strength=float(strength),
+                          bypass=False))
     audio = out(g.add("LTXVEmptyLatentAudio", audio_vae=avae, frames_number=length, frame_rate=int(fps),
                       batch_size=1))
     av = out(g.add("LTXVConcatAVLatent", video_latent=video, audio_latent=audio))
@@ -466,8 +561,8 @@ def ltx_video(prompt: str, files: dict, width: int, height: int, seconds: int, s
 
     frames = out(g.add("VAEDecodeTiled", samples=out(sep2, 0), vae=vae, tile_size=512, overlap=64,
                        temporal_size=64, temporal_overlap=16))
-    sound = out(g.add("LTXVAudioVAEDecode", samples=out(sep2, 1), audio_vae=avae))
-    clip_video = out(g.add("CreateVideo", images=frames, audio=sound, fps=float(fps)))
+    extra = {"audio": out(g.add("LTXVAudioVAEDecode", samples=out(sep2, 1), audio_vae=avae))} if audio else {}
+    clip_video = out(g.add("CreateVideo", images=frames, fps=float(fps), **extra))
     g.add("SaveVideo", video=clip_video, filename_prefix=prefix, **{"format": "mp4", "format.codec": "auto"})
     # first frame as the gallery poster
     g.add("SaveImage", filename_prefix=prefix + "-poster",
