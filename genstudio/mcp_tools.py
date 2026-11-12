@@ -507,9 +507,14 @@ def build_mcp(state: "State") -> MCPServer:
         "camera (angle, lens, movement), lighting, mood, and the sound (dialogue in quotes with who says it, "
         "ambience, effects, music). "
         "Keyframes: image_id = first shot, end_image_id = last shot, mid_image_id = the middle, keyframes = "
-        "[{image_id, at: seconds}] for any other moments (each id may instead be a file path in *_path / "
-        "keyframes[].path). With keyframes it runs ComfyUI's First & Last Frame recipe (one pass, full size). "
-        "Knobs: seconds 2-20 (over 10 is slow and tight on 16GB), quality 540p/720p or width/height directly "
+        "[{image_id, at: seconds, strength?}] for any other moments (each id may instead be a file path in *_path "
+        "/ keyframes[].path). With keyframes it runs ComfyUI's First & Last Frame recipe (one pass, full size). "
+        "If a person shows up twice or two poses blend between keyframes, leave more time between them, describe "
+        "the movement between them in the prompt, or lower that keyframe's strength (0.4-0.5). "
+        "Memory: the home GPU (16GB) fits about 45,000 video tokens = width/32 x height/32 x (frames/8): e.g. "
+        "1920x1088 at 24 fps up to ~7 s, at 12 fps ~14 s; 1280x704 at 24 fps ~16 s. Bigger requests are refused "
+        "with what would fit (allow_risky=true tries anyway; ComfyUI may crash and is restarted automatically). "
+        "Knobs: seconds 2-20, quality 540p/720p or width/height directly "
         "(multiples of 64), orientation auto/landscape/portrait/square, fps 12-50 (24 default), image_strength "
         "0.1-1 (how strictly the pictures are followed, 0.7 default), audio true/false, negative, seed. "
         "Returns a job_id: poll get_job_status; the finished mp4 path is in the result (export_image copies it)."))
@@ -518,18 +523,19 @@ def build_mcp(state: "State") -> MCPServer:
                            end_image_id: str | None = None, end_image_path: str | None = None,
                            mid_image_id: str | None = None, mid_image_path: str | None = None,
                            keyframes: list[dict] | None = None, width: int | None = None, height: int | None = None,
-                           fps: int = 24, image_strength: float = 0.7, audio: bool = True, wait_seconds: int = 30):
+                           fps: int = 24, image_strength: float = 0.7, audio: bool = True, allow_risky: bool = False,
+                           wait_seconds: int = 30):
         from .jobs import LtxRequest
         image_id = _one(image_id, image_path)
-        keys = [{"image_id": _one(k.get("image_id"), k.get("path")), "at": float(k.get("at", 0))}
-                for k in keyframes or []]
+        keys = [{"image_id": _one(k.get("image_id"), k.get("path")), "at": float(k.get("at", 0)),
+                 "strength": k.get("strength")} for k in keyframes or []]
         job = state.engine.submit_ltx(LtxRequest(
             prompt=prompt, image_id=image_id, end_image_id=_one(end_image_id, end_image_path),
             mid_image_id=_one(mid_image_id, mid_image_path), keyframes=keys, seconds=max(2, min(int(seconds), 20)),
             quality="540p" if str(quality).startswith("540") else "720p",
             orientation=orientation if orientation in ("auto", "landscape", "portrait", "square") else "auto",
             width=width, height=height, fps=fps, image_strength=image_strength, audio=audio,
-            negative=negative, seed=seed))
+            negative=negative, seed=seed, allow_risky=allow_risky))
         job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
         out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
                "decision": job.decision}

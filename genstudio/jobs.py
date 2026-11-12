@@ -6,6 +6,7 @@ import re
 import base64
 import io
 import json
+import os
 import random
 import time
 import uuid
@@ -147,6 +148,7 @@ class EditRequest(BaseModel):
 class Keyframe(BaseModel):
     image_id: str = Field(..., description="이 순간에 나올 장면 (이미지 id)")
     at: float = Field(..., description="몇 초에 (0 = 처음, -1 = 마지막)")
+    strength: float | None = Field(None, ge=0.1, le=1.0, description="이 장면만 따르는 정도 (비우면 image_strength)")
 
 
 class VideoRequest(BaseModel):
@@ -212,6 +214,7 @@ class LtxRequest(BaseModel):
     audio: bool = Field(True, description="소리(대사·효과음·음악)까지 만들기")
     negative: str = ""
     seed: int = -1
+    allow_risky: bool = Field(False, description="그래픽 메모리 한도를 넘는 크기·길이도 그냥 시도 (ComfyUI가 꺼질 수 있음)")
 
 
 class VideoFrameRequest(BaseModel):
@@ -238,15 +241,30 @@ def custom_size(w: int, h: int, width: int | None, height: int | None, step: int
     return max(256, round(width / step) * step), max(256, round(height / step) * step)
 
 
-def ltx_guides(req: "LtxRequest") -> list[tuple[str, float]]:
-    """Every pinned picture as (image id, second), in time order; -1 = the last frame."""
-    g = [(req.image_id, 0.0)] if req.image_id else []
+def ltx_guides(req: "LtxRequest") -> list[tuple[str, float, float]]:
+    """Every pinned picture as (image id, second, strength), in time order; -1 = the last frame."""
+    st = req.image_strength
+    g = [(req.image_id, 0.0, st)] if req.image_id else []
     if req.mid_image_id:
-        g.append((req.mid_image_id, req.seconds / 2))
-    g += [(k.image_id, float(k.at)) for k in req.keyframes]
+        g.append((req.mid_image_id, req.seconds / 2, st))
+    g += [(k.image_id, float(k.at), k.strength if k.strength is not None else st) for k in req.keyframes]
     if req.end_image_id:
-        g.append((req.end_image_id, -1.0))
+        g.append((req.end_image_id, -1.0, st))
     return sorted(g, key=lambda x: float("inf") if x[1] < 0 or x[1] >= req.seconds else x[1])
+
+
+# What fits in 16GB at once, in LTX video tokens (32x32 pixels x 8 frames). Measured on the home PC
+# (RTX 4080 SUPER 16GB, 32GB RAM): 1920x1088 6 s 24 fps = 38,760 ran; 10 s = 63,240 ran out of memory.
+LTX_TOKEN_BUDGET = int(os.environ.get("GS_LTX_TOKEN_BUDGET", "45000"))
+
+
+def ltx_tokens(w: int, h: int, frames: int) -> int:
+    return (w // 32) * (h // 32) * ((frames - 1) // 8 + 1)
+
+
+def ltx_max_seconds(w: int, h: int, fps: int) -> float:
+    latent = LTX_TOKEN_BUDGET // max(1, (w // 32) * (h // 32))
+    return max(0.0, ((latent - 1) * 8) / fps)
 
 
 def ltx_frame(at: float, seconds: int, fps: int) -> int:
@@ -546,7 +564,8 @@ class Engine:
         self._worker: asyncio.Task | None = None
         self._last_family: str | None = None
         self._running: str | None = None
-        self._task: asyncio.Task | None = None          # the running job, so a cancel can stop it between graphs too
+        self._task: asyncio.Task | None = None
+        self.revive = None                              # set by the app: starts ComfyUI again (returns False if it can't)          # the running job, so a cancel can stop it between graphs too
         self._cancel: set[str] = set()
         self._done_events: dict[str, asyncio.Event] = {}
 
@@ -915,7 +934,7 @@ class Engine:
         if not self.registry.tool_ready("video_ltx", self.settings.models_dir):
             raise ValueError("LTX-2.5 영상 모델이 없어요. Gen Studio 설정 → 'Codex 전용 고성능 영상'에서 받아 주세요.")
         guides = ltx_guides(req)
-        for iid, _ in guides:
+        for iid, _, _ in guides:
             if not self.library.get(iid):
                 raise KeyError(f"이미지를 찾을 수 없어요: {iid}")
             self._need_still(iid)
@@ -926,12 +945,24 @@ class Engine:
             w, h = first["width"], first["height"]
         w, h = custom_size(w, h, req.width, req.height, 64) if req.width or req.height else ltx_size(w, h, req.quality)
         frames = req.seconds * req.fps + 1
-        mode = "keyframes" if any(at != 0 for _, at in guides) else "image" if guides else "text"
+        tokens = ltx_tokens(w, h, frames)
+        if tokens > LTX_TOKEN_BUDGET and not req.allow_risky:
+            alt = [f"{req.fps}fps로 {ltx_max_seconds(w, h, req.fps):.0f}초까지"]
+            if req.fps > 12:
+                alt.append(f"12fps로 {min(20, ltx_max_seconds(w, h, 12)):.0f}초까지")
+            a7 = ltx_size(w, h, "720p")
+            alt.append(f"{a7[0]}×{a7[1]}로 {min(20, ltx_max_seconds(*a7, req.fps)):.0f}초까지")
+            raise ValueError(f"{w}×{h} {req.seconds}초 {req.fps}fps는 16GB 그래픽 메모리에 너무 커요 "
+                             f"(ComfyUI가 꺼질 수 있어요). 가능한 것: {', '.join(alt)}. "
+                             "그래도 해 보려면 allow_risky=true.")
+        mode = "keyframes" if any(at != 0 for _, at, _ in guides) else "image" if guides else "text"
         job = Job(id=uuid.uuid4().hex[:12], kind="ltx", request=req.model_dump(),
                   decision={"action": f"LTX 영상 {req.seconds}초" + (f" · 장면 {len(guides)}개" if mode == "keyframes" else ""),
                             "model_name": "LTX-2.5 22B (영상+소리)" if req.audio else "LTX-2.5 22B",
                             "family": "ltx", "width": w, "height": h, "frames": frames, "fps": req.fps, "mode": mode,
-                            "guides": [{"image_id": i, "frame": ltx_frame(at, req.seconds, req.fps)} for i, at in guides]})
+                            "tokens": tokens,
+                            "guides": [{"image_id": i, "frame": ltx_frame(at, req.seconds, req.fps), "strength": st}
+                                       for i, at, st in guides]})
         return job
 
     async def _upload_fit(self, iid: str, w: int, h: int, tag: str) -> tuple[str, bytes]:
@@ -956,7 +987,7 @@ class Engine:
         w, h = d["width"], d["height"]
         fps = d.get("fps") or LTX_FPS
         guides = ltx_guides(req)
-        names = [(await self._upload_fit(iid, w, h, "ltx-key"))[0] for iid, _ in guides]
+        names = [(await self._upload_fit(iid, w, h, "ltx-key"))[0] for iid, _, _ in guides]
         src = self.library.get(req.image_id) if req.image_id else None
         await self.comfy.free()                                   # a 22B model and a 12B text encoder: start clean
         self._last_family = None
@@ -966,7 +997,8 @@ class Engine:
         seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
         if d.get("mode") == "keyframes":
             graph = workflows.ltx_keyframes(req.prompt.strip(), files, w, h, req.seconds, seed,
-                                            [(n, g["frame"]) for n, g in zip(names, d["guides"])],
+                                            [(n, g["frame"], g.get("strength", req.image_strength))
+                                             for n, g in zip(names, d["guides"])],
                                             negative=req.negative, fps=fps, strength=req.image_strength, audio=req.audio)
         else:
             graph = workflows.ltx_video(req.prompt.strip(), files, w, h, req.seconds, seed,
@@ -1634,6 +1666,7 @@ class Engine:
             job.status, job.started_at, job.message = "running", time.time(), "준비 중"
             self._running = jid
             try:
+                await self._ensure_comfy(job)
                 self._task = asyncio.create_task(self._run_job(job))
                 await self._task
                 job.status, job.progress, job.message = "done", 1.0, "완료"
@@ -1647,6 +1680,9 @@ class Engine:
                 else:
                     job.status, job.error, job.message = "error", str(e), "실패"
                     log.warning("작업 실패 %s (%s): %s", job.id, job.kind, e)
+                    if await self.comfy.ping() is None and self.revive and self.revive():
+                        job.error += " — ComfyUI가 꺼져서 다시 켜고 있어요. 1~2분 뒤에 다시 해 주세요."
+                        self._last_family = None
             except Exception as e:  # keep the worker alive no matter what
                 job.status, job.error, job.message = "error", f"{type(e).__name__}: {e}", "실패"
                 log.exception("작업 오류 %s (%s)", job.id, job.kind)
@@ -1655,6 +1691,20 @@ class Engine:
                 self._task = None
                 self._cancel.discard(jid)
                 self._finish(job)
+
+    async def _ensure_comfy(self, job: Job, wait: float = 240) -> None:
+        """ComfyUI fell over (out of memory ...): start it again before the next job instead of failing it."""
+        if await self.comfy.ping() is not None or not self.revive:
+            return
+        job.message = "ComfyUI 다시 켜는 중"
+        if not self.revive():
+            return
+        self._last_family = None
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            await asyncio.sleep(2)
+            if await self.comfy.ping() is not None:
+                return
 
     async def _run_job(self, job: Job) -> None:
         """One job from start to end; runs as its own task so cancel() can stop it anywhere."""

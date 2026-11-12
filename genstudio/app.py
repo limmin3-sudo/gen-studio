@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,6 +52,18 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
     comfy = ComfyClient(settings.comfy_url, transport=comfy_transport)
     engine = Engine(settings, registry, library, comfy)
     state = State(settings, registry, library, comfy, engine)
+
+    def revive_comfy() -> bool:
+        """After ComfyUI falls over (out of memory ...), start it again in the background, if we can."""
+        from . import runtime
+        p = state.extra.get("comfy_proc")
+        if p is None:
+            p = state.extra["comfy_proc"] = runtime.ComfyProcess(settings)
+        if not p.installed or p.state in ("starting", "updating"):
+            return False
+        threading.Thread(target=p.start, daemon=True).start()
+        return True
+    engine.revive = revive_comfy
 
     from .mcp_tools import build_mcp
     mcp = build_mcp(state)

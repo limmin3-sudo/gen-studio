@@ -441,7 +441,7 @@ LTX_SIGMAS_2 = "0.85, 0.7250, 0.4219, 0.0"
 
 
 def ltx_keyframes(prompt: str, files: dict, width: int, height: int, seconds: int, seed: int,
-                  guides: list[tuple[str, int]], *, negative: str = "", fps: int = 24, strength: float = 0.7,
+                  guides: list[tuple], *, negative: str = "", fps: int = 24, strength: float = 0.7,
                   audio: bool = True, prefix: str = "gen-studio/ltx") -> dict:
     """Pictures pinned to frames (start = 0, end = -1, anything in between), as in ComfyUI's official
     "First & Last Frame to Video (LTX-2.5)" template: one pass at full size with LTXVAddGuide per picture,
@@ -458,10 +458,12 @@ def ltx_keyframes(prompt: str, files: dict, width: int, height: int, seconds: in
     length = int(seconds) * int(fps) + 1
     p_, n_ = out(cond, 0), out(cond, 1)
     latent = out(g.add("EmptyLTXVLatentVideo", width=int(width), height=int(height), length=length, batch_size=1))
-    for name, idx in guides:
+    for guide in guides:
+        name, idx = guide[0], guide[1]
+        st = guide[2] if len(guide) > 2 and guide[2] is not None else strength
         img = out(g.add("LTXVPreprocess", image=out(g.add("LoadImage", image=name)), img_compression=18))
         ag = g.add("LTXVAddGuide", positive=p_, negative=n_, vae=vae, latent=latent, image=img,
-                   frame_idx=int(idx), strength=float(strength))
+                   frame_idx=int(idx), strength=float(st))
         p_, n_, latent = out(ag, 0), out(ag, 1), out(ag, 2)
     alat = out(g.add("LTXVEmptyLatentAudio", audio_vae=avae, frames_number=length, frame_rate=int(fps), batch_size=1))
     av = out(g.add("LTXVConcatAVLatent", video_latent=latent, audio_latent=alat))

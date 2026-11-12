@@ -206,5 +206,41 @@ def test_ltx_keyframes_and_knobs(client, settings, fake, tmp_path):
     assert r["status"] == "done" and r["decision"]["mode"] == "keyframes"
     # only an end picture still works (text start)
     j = wait_job(client, client.post("/api/ltx", json={"prompt": "x", "end_image_id": ids[2]}).json()["id"])
-    assert j["status"] == "done" and j["decision"]["guides"] == [{"image_id": ids[2], "frame": -1}]
+    assert j["status"] == "done" and j["decision"]["guides"] == [{"image_id": ids[2], "frame": -1, "strength": 0.7}]
     assert client.post("/api/ltx", json={"prompt": "x", "end_image_id": "nope"}).status_code == 404
+
+
+def test_ltx_memory_guard_and_keyframe_strength(client, settings, fake):
+    """1080p 10 s at 24 fps ran out of 16GB on the home PC: refused up front with what would fit."""
+    from test_api import wait_job
+    from genstudio.config import CONFIG_DIR
+    from genstudio.jobs import ltx_tokens
+    from genstudio.registry import Registry
+    reg = Registry.load(CONFIG_DIR / "models.yaml")
+    client.app.state.gs.engine.registry.tools["video_ltx"] = reg.tools["video_ltx"]
+    assert ltx_tokens(1920, 1088, 6 * 24 + 1) == 38760 and ltx_tokens(1920, 1088, 10 * 24 + 1) == 63240
+    img = wait_job(client, client.post("/api/generate", json={"prompt": "photo", "aspect": "landscape"}).json()["id"])["result_ids"][0]
+    r = client.post("/api/ltx", json={"prompt": "x", "image_id": img, "end_image_id": img, "width": 1920, "height": 1080,
+                                      "seconds": 10})
+    assert r.status_code == 400 and "12fps" in r.json()["detail"] and "allow_risky" in r.json()["detail"]
+    ok = client.post("/api/ltx", json={"prompt": "x", "image_id": img, "end_image_id": img, "width": 1920,
+                                       "height": 1080, "seconds": 6})
+    assert ok.status_code == 200 and ok.json()["decision"]["height"] == 1088
+    risky = client.post("/api/ltx", json={"prompt": "x", "image_id": img, "width": 1920, "height": 1080, "seconds": 10,
+                                          "allow_risky": True})
+    assert risky.status_code == 200
+    # per-keyframe strength
+    j = wait_job(client, client.post("/api/ltx", json={"prompt": "x", "image_id": img, "end_image_id": img,
+                                                        "keyframes": [{"image_id": img, "at": 2, "strength": 0.45}],
+                                                        "seconds": 4}).json()["id"])
+    assert j["status"] == "done", j["error"]
+    g = list(fake.prompts.values())[-1]
+    assert [n["inputs"]["strength"] for n in g.values() if n["class_type"] == "LTXVAddGuide"] == [0.7, 0.45, 0.7]
+
+
+def test_comfy_memory_error_is_explained(client, fake):
+    from test_api import wait_job
+    fake.fail_with = "aimdo memory compile error"
+    j = wait_job(client, client.post("/api/generate", json={"prompt": "photo"}).json()["id"])
+    fake.fail_with = None
+    assert j["status"] == "error" and "그래픽 메모리가 부족해요" in j["error"] and "aimdo" in j["error"]

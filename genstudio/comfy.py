@@ -204,11 +204,19 @@ def output_text(outputs: dict) -> str:
     return ""
 
 
+MEMORY_WORDS = ("out of memory", "outofmemory", "cuda error: out", "allocation", "aimdo", "not enough memory",
+                "cudamalloc", "memory compile")
+
+
 def _history_error(h: dict) -> str:
     for m in (h.get("status") or {}).get("messages", []):
         if m and m[0] == "execution_error":
             d = m[1]
-            return f"{d.get('node_type', '')}: {d.get('exception_message', '실행 오류')}"
+            raw = f"{d.get('node_type', '')}: {d.get('exception_message', '실행 오류')}"
+            if any(w in raw.lower() for w in MEMORY_WORDS):
+                return ("그래픽 메모리가 부족해요. 크기·길이·fps를 줄이거나 다른 프로그램(게임 등)을 닫고 다시 해 "
+                        f"주세요. ({raw.strip()[:200]})")
+            return raw
     return "ComfyUI 실행 오류"
 
 
