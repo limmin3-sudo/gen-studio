@@ -5,15 +5,18 @@ Tools only pass requests to the local models and hand back results.
 from __future__ import annotations
 
 import base64
+import functools
 import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from mcp.server.apps import Apps
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.utilities.types import Image as MCPImage
 from PIL import Image
 
+from .comfy import ComfyError
 from .jobs import CharacterBuildRequest, CutoutRequest, EditRequest, GenerateRequest, SegmentRequest
 from .library import flat_rgb
 
@@ -42,7 +45,10 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
 - change_pose(image_id, pose_id or prompt) moves the person into a new pose, same person and background.
 - Exact poses: read_pose(image_id) gives the joints; make_pose(people=[{"left_wrist": [0.7, 0.1], ...}],
   start_pose_id=...) moves them (or starts from a preset) and returns a pose_id with a picture to check. Use it
-  with generate_image(pose_id=...) or change_pose(pose_id=...).
+  with generate_image(pose_id=...) or change_pose(pose_id=...). make_pose also takes hand shapes (fist, peace ...),
+  face/feet, copy_side and a camera angle (camera_yaw / camera_pitch) for side or top views.
+- Pose-driven video: pose_video(image_id, poses=[{pose_id, at}], prompt) turns each pose into a still of the
+  same person, then animates through them (LTX keyframes, or Wan start/middle/end).
 - VIDEO: use create_video(prompt, image_id=None, seconds=5) — LTX-2.5 with sound, from text or an image — for
   every clip the user will look at. Write a detailed English shot description: subject, action beat by beat,
   camera, lighting, mood and the audio (dialogue in quotes, ambience, effects, music). It is slow (minutes to tens
@@ -84,6 +90,25 @@ PANEL_HTML = (Path(__file__).with_name("panel.html")).read_text(encoding="utf-8"
 
 def _data_url(raw: bytes, mime: str) -> str:
     return f"data:{mime};base64," + base64.b64encode(raw).decode()
+
+
+def _with_readable_errors(tool_decorator):
+    """The MCP library hides the text of ordinary exceptions from the client ("Error executing tool x"). Codex
+    needs to read why a call failed (model missing, image not found, bad joint name ...), so the errors our own
+    code raises on purpose are passed on as ToolError with their message."""
+    def decorator(*a, **kw):
+        register = tool_decorator(*a, **kw)
+
+        def wrap(fn):
+            @functools.wraps(fn)
+            async def run(*args, **kwargs):
+                try:
+                    return await fn(*args, **kwargs)
+                except (ValueError, KeyError, ComfyError) as e:
+                    raise ToolError(str(e).strip("'")) from e
+            return register(run)
+        return wrap
+    return decorator
 
 
 def build_mcp(state: "State") -> MCPServer:
@@ -141,6 +166,7 @@ def build_mcp(state: "State") -> MCPServer:
         return f"{state.public_base()}/#edit={image_id}"
 
     mcp = MCPServer("gen-studio", title="Gen Studio", instructions=INSTRUCTIONS, version="0.1.0", extensions=[apps])
+    mcp.tool = _with_readable_errors(mcp.tool)
 
     def _preview(image_id: str, max_side: int = 1024) -> MCPImage:
         path = state.library.path(image_id)
@@ -347,38 +373,101 @@ def build_mcp(state: "State") -> MCPServer:
 
     @mcp.tool(description=(
         "Build a body pose by placing joints (the skeleton editor, for Codex). people = one dict per person: joint "
-        "name -> [x, y], 0..1 of the canvas (0,0 top-left), the person's right side is on the picture's left when "
-        "facing the camera. Joints: nose, neck, right_/left_ shoulder, elbow, wrist, hip, knee, ankle, right_/left_ "
-        "eye, ear. Give only the joints you want to move: the rest come from start_pose_id (the same person index) "
-        "or from preset ('stand', 'arms_up', 'walk', 'sit', 'hands_hips'; a person dict may also carry its own "
-        "\"preset\"). A joint set to null is hidden. Canvas width/height set the picture shape. Returns pose_id and "
-        "a picture of the skeleton to check; then generate_image(pose_id=...) or change_pose(pose_id=...)."))
+        "name -> [x, y] or [x, y, z], 0..1 of the canvas (0,0 top-left; z = depth in canvas heights, negative = "
+        "toward the camera). The person's right side is on the picture's left when facing the camera. Joints: "
+        "nose, neck, right_/left_ shoulder, elbow, wrist, hip, knee, ankle, right_/left_ eye, ear. Give only the "
+        "joints you want to move: the rest come from start_pose_id (same person index) or a preset ('stand', "
+        "'arms_up', 'walk', 'sit', 'hands_hips'; a person dict may carry its own \"preset\"). A joint set to null "
+        "is hidden. Per person \"right_hand\" / \"left_hand\": 'open', 'relaxed' (default), 'fist', 'point', "
+        "'peace', 'thumbs_up' or null (no hand); \"copy_side\": 'left' or 'right' mirrors that side's arm and "
+        "leg onto the other. face / feet draw the face (follows eyes and nose) and feet. camera_yaw (-90..90, "
+        "seen from the side) and camera_pitch (-60..60, from above) turn the camera around the people (uses the "
+        "depths). Canvas width/height set the picture shape. Returns pose_id and a picture of the skeleton to "
+        "check; then generate_image(pose_id=...), change_pose(pose_id=...) or pose_video(...)."))
     async def make_pose(people: list[dict], width: int = 768, height: int = 1152, name: str = "",
-                        start_pose_id: str | None = None, preset: str = "stand"):
+                        start_pose_id: str | None = None, preset: str = "stand", face: bool = True,
+                        feet: bool = True, camera_yaw: float = 0.0, camera_pitch: float = 0.0):
         from . import poses
         from .jobs import PoseSaveRequest
-        base = []
+        base, base_hands = [], []
         if start_pose_id:
-            rec = state.library.get(start_pose_id) or {}
-            base = (rec.get("keypoints") or {}).get("people") or []
+            kp = (state.library.get(start_pose_id) or {}).get("keypoints") or {}
+            ed = kp.get("edit") or {}
+            if ed.get("people3d"):
+                base = [p.get("body") for p in ed["people3d"]]
+                base_hands = [p.get("hands") or {} for p in ed["people3d"]]
+            else:
+                rec0 = state.library.get(start_pose_id)
+                for p in kp.get("people") or []:
+                    d = p if isinstance(p, dict) else {"body": p}
+                    base.append([None if j is None else [*j, 0.0] for j in d["body"]])
+                    base_hands.append({side: poses.hand_local(d.get(f"{side}_hand"), d["body"], side, rec0["width"],
+                                                              rec0["height"]) or "relaxed" for side in ("right", "left")})
             if not base:
                 raise ValueError("start_pose_id에 관절 정보가 없어요. read_pose로 먼저 읽어 주세요.")
-        out = []
+        bodies, hands = [], []
         for i, person in enumerate(people or [{}]):
             person = dict(person or {})
             p = person.pop("preset", None)
-            start = poses.preset(p, width, height) if p else base[i] if i < len(base) else poses.preset(preset, width, height)
-            out.append(poses.from_named(person, start))
-        rec = state.engine.save_pose(PoseSaveRequest(people=out, width=width, height=height, name=name,
-                                                     parent_id=start_pose_id))
+            copy = person.pop("copy_side", None)
+            hand = {"right": person.pop("right_hand", "__keep"), "left": person.pop("left_hand", "__keep")}
+            start = (poses.preset3d(p, width, height) if p else base[i] if i < len(base)
+                     else poses.preset3d(preset, width, height))
+            body = poses.from_named(person, start)
+            if copy in ("left", "right"):
+                body = poses.copy_side(body, copy)
+            prev = base_hands[i] if i < len(base_hands) else {}
+            for side in ("right", "left"):
+                if hand[side] == "__keep":
+                    hand[side] = prev.get(side, "relaxed") if prev else "relaxed"
+                if isinstance(hand[side], str) and hand[side] not in poses.HANDS:
+                    raise ValueError(f"모르는 손 모양: {hand[side]} (쓸 수 있는 것: {', '.join(poses.HANDS)})")
+            bodies.append(body)
+            hands.append(hand)
+        yaw, pitch = max(-90.0, min(90.0, float(camera_yaw))), max(-60.0, min(60.0, float(camera_pitch)))
+        drawn = poses.compose(bodies, width, height, yaw=yaw, pitch=pitch, hands=hands, face=face, feet=feet)
+        edit = {"people3d": [{"body": b, "hands": h} for b, h in zip(bodies, hands)],
+                "camera": {"yaw": yaw, "pitch": pitch}, "face": face, "feet": feet}
+        rec = state.engine.save_pose(PoseSaveRequest(people=drawn, width=width, height=height, name=name,
+                                                     parent_id=start_pose_id, edit=edit))
         return [{"pose_id": rec["id"], "width": width, "height": height,
-                 "people": [poses.named(p) for p in rec["keypoints"]["people"]],
-                 "next": "generate_image(prompt, pose_id=...) 또는 change_pose(image_id, pose_id=...)"},
+                 "people": [{**poses.named(b), "right_hand": h["right"], "left_hand": h["left"]}
+                            for b, h in zip(bodies, hands)],
+                 "camera": {"yaw": yaw, "pitch": pitch},
+                 "next": "generate_image(prompt, pose_id=...), change_pose(image_id, pose_id=...) 또는 pose_video"},
                 _preview(rec["id"])]
 
     @mcp.tool(description=(
+        "Video where the person moves through poses you made: each pose (pose_id from make_pose / read_pose / "
+        "the editor, or a photo to copy the pose of) is first turned into a still of the SAME person and scene "
+        "(change_pose), then the stills become keyframes of one clip. poses = [{pose_id, at: seconds}] (at -1 = "
+        "the last frame). keep_start: the original image is the first frame. engine 'ltx' (LTX-2.5, sound, any "
+        "number of poses, up to 20 s) or 'wan' (Wan 2.2, start/middle/end only). Other knobs as in create_video "
+        "(seconds, quality, fps, audio, image_strength, negative, seed) / image_to_video (smooth). Slow: poll "
+        "get_job_status. The result's image_ids are the clip first, then each pose still."))
+    async def pose_video(image_id: str, poses: list[dict], prompt: str = "", engine: str = "ltx",
+                         keep_start: bool = True, seconds: int = 5, quality: str = "720p", fps: int = 24,
+                         audio: bool = True, image_strength: float = 0.7, smooth: bool = True, negative: str = "",
+                         seed: int = -1, wait_seconds: int = 30):
+        from .jobs import PoseVideoRequest
+        job = state.engine.submit_pose_video(PoseVideoRequest(
+            image_id=image_id, poses=poses, prompt=prompt, engine="wan" if engine == "wan" else "ltx",
+            keep_start=keep_start, seconds=seconds, quality=quality if quality in ("480p", "540p", "720p") else "720p",
+            fps=fps, audio=audio, image_strength=image_strength, smooth=smooth, negative=negative, seed=seed))
+        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
+        out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
+               "decision": job.decision}
+        if job.status == "done":
+            out["video"] = _info(job.result["video_id"])
+            out["pose_stills"] = [_info(i) for i in job.result["stills"]]
+        else:
+            out["next"] = "오래 걸려요. get_job_status(job_id, wait_seconds=60)로 가끔 확인하세요."
+        return out
+
+    @mcp.tool(description=(
         "Read the body joints of every person in a picture (or a saved pose). Returns pose_id and the joints as "
-        "name -> [x, y] (0..1), ready to adjust with make_pose(start_pose_id=pose_id, people=[{...moved joints}])."))
+        "name -> [x, y] (0..1), plus whether hands and face were found; adjust with "
+        "make_pose(start_pose_id=pose_id, people=[{...moved joints}])."))
     async def read_pose(image_id: str | None = None, image_path: str | None = None, wait_seconds: int = 60):
         from . import poses
         image_id = _one(image_id, image_path)
@@ -389,8 +478,13 @@ def build_mcp(state: "State") -> MCPServer:
         if job.status != "done":
             return {"job_id": job.id, "status": job.status, "error": job.error}
         rec = state.library.get(job.result["pose_id"])
-        return [{"pose_id": rec["id"], "width": rec["width"], "height": rec["height"],
-                 "people": [poses.named(p) for p in job.result["keypoints"]["people"]]}, _preview(rec["id"])]
+        people = []
+        for p in job.result["keypoints"]["people"]:
+            d = p if isinstance(p, dict) else {"body": p}
+            people.append({**poses.named(d["body"]), "hands_found": [s for s in ("right", "left") if d.get(f"{s}_hand")],
+                           "face_found": bool(d.get("face"))})
+        return [{"pose_id": rec["id"], "width": rec["width"], "height": rec["height"], "people": people},
+                _preview(rec["id"])]
 
     @mcp.tool(description=(
         "Change the pose of the person in an image, keeping the same person, clothing and background. Give a photo "

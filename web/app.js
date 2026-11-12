@@ -662,33 +662,136 @@ addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#drop').hi
 addEventListener('paste', e => { const f = [...(e.clipboardData?.files || [])][0]; if (f && f.type.startsWith('image/')) importFile(f); });
 
 /* ========================================================= skeleton editor */
-/* Drag the joints of one or more people to make a pose. Saved as a pose map (/api/poses) that drawing and
-   "자세 바꾸기" use like a pose read from a photo. Joints are [x, y] in 0..1 of the canvas, OpenPose order. */
+/* Drag the joints of one or more people to make a pose, with hands, face, feet and a camera you can turn.
+   Saved as a pose map (/api/poses) that drawing, "자세 바꾸기" and pose videos use like a pose read from a photo.
+   Model space: body joints [x, y, z] (x, y in 0..1 of the canvas, z in canvas heights, + = away); what is
+   drawn is that seen from the camera. The maths matches genstudio/poses.py (make_pose for Codex). */
 const PoseEd = (() => {
   let META = null;
   const ASPECTS = [['2:3', 2, 3, '세로'], ['3:2', 3, 2, '가로'], ['1:1', 1, 1, '정사각'], ['9:16', 9, 16, '세로 길게'], ['16:9', 16, 9, '가로 길게']];
+  const ARMS = {right: [2, 3, 4], left: [5, 6, 7]}, LEGS = {right: [8, 9, 10], left: [11, 12, 13]};
   const canvasSize = (a, b) => { const k = Math.sqrt(1024 * 1024 / (a * b)); return [Math.max(256, Math.round(a * k / 64) * 64), Math.max(256, Math.round(b * k / 64) * 64)]; };
-  async function meta() { if (!META) META = await api.get('/api/poses'); return META; }
-  function fitPreset(id, W, H) {
-    const pts = (META.presets.find(p => p.id === id) || META.presets[0]).joints;
-    const s = Math.min(W / 2, H / 3);
-    return pts.map(([x, y]) => [+(0.5 + (x - 0.5) * 2 * s / W).toFixed(4), +(0.5 + (y - 0.5) * 3 * s / H).toFixed(4)]);
-  }
+  const r4 = v => Math.round(v * 10000) / 10000;
   const clone = v => JSON.parse(JSON.stringify(v));
+  async function meta() { if (!META) META = await api.get('/api/poses'); return META; }
+
+  function preset3d(id, W, H) {
+    const p = META.presets.find(x => x.id === id) || META.presets[0];
+    const s = Math.min(W / 2, H / 3), k = 3 * s / H;
+    return p.joints.map(([x, y], i) => [r4(0.5 + (x - 0.5) * 2 * s / W), r4(0.5 + (y - 0.5) * 3 * s / H), r4(p.z[i] * k)]);
+  }
+  function sceneCenter(people, W, H) {
+    const hips = people.flatMap(p => [p.body[8], p.body[11]]).filter(Boolean);
+    if (!hips.length) return [W / 2, H / 2];
+    return [hips.reduce((a, j) => a + j[0], 0) / hips.length * W, hips.reduce((a, j) => a + j[1], 0) / hips.length * H];
+  }
+  function rot(cam) {
+    const y = cam.yaw * Math.PI / 180, p = cam.pitch * Math.PI / 180;
+    return {cy: Math.cos(y), sy: Math.sin(y), cp: Math.cos(p), sp: Math.sin(p)};
+  }
+  function project(j, W, H, cam, c) {               // model -> [x, y, depth] seen from the camera
+    if (!j) return null;
+    const R = rot(cam), x = j[0] * W - c[0], y = j[1] * H - c[1], z = (j[2] || 0) * H;
+    const x1 = x * R.cy + z * R.sy, z1 = -x * R.sy + z * R.cy;
+    const y1 = y * R.cp - z1 * R.sp, z2 = y * R.sp + z1 * R.cp;
+    return [(c[0] + x1) / W, (c[1] + y1) / H, z2 / H];
+  }
+  function unproject(q, depth, W, H, cam, c) {      // screen point + its depth -> model
+    const R = rot(cam), x1 = q[0] * W - c[0], y1 = q[1] * H - c[1], z2 = depth * H;
+    const y = y1 * R.cp + z2 * R.sp, z1 = -y1 * R.sp + z2 * R.cp;
+    const x = x1 * R.cy - z1 * R.sy, z = x1 * R.sy + z1 * R.cy;
+    return [r4((c[0] + x) / W), r4((c[1] + y) / H), r4(z / H)];
+  }
+  function handFrame(body, side, W, H) {
+    const s = body[ARMS[side][0]], e = body[ARMS[side][1]], w = body[ARMS[side][2]];
+    if (!e || !w) return null;
+    const ex = e[0] * W, ey = e[1] * H, wx = w[0] * W, wy = w[1] * H, L = Math.hypot(wx - ex, wy - ey);
+    if (L < 1) return null;
+    const ux = (wx - ex) / L, uy = (wy - ey) / L; let px = -uy, py = ux;
+    const ref = body[1] || s;
+    if (ref && px * (ref[0] * W - wx) + py * (ref[1] * H - wy) < 0) { px = -px; py = -py; }
+    return {wx, wy, L, ux, uy, px, py};
+  }
+  function handPoints(shape, body, side, W, H) {
+    const f = handFrame(body, side, W, H); if (!f || !shape) return null;
+    const local = typeof shape === 'string' ? (META.hands.find(h => h.id === shape) || META.hands[0]).points : shape;
+    return local.map(([lx, ly]) => [r4((f.wx + f.L * (lx * f.px + ly * f.ux)) / W), r4((f.wy + f.L * (lx * f.py + ly * f.uy)) / H)]);
+  }
+  function handLocal(pt, body, side, W, H) {
+    const f = handFrame(body, side, W, H); if (!f) return null;
+    const vx = pt[0] * W - f.wx, vy = pt[1] * H - f.wy;
+    return [r4((vx * f.px + vy * f.py) / f.L), r4((vx * f.ux + vy * f.uy) / f.L)];
+  }
+  function facePoints(body, W, H) {
+    const n = body[0], er = body[14], el = body[15];
+    if (!n || !er || !el) return null;
+    const [t1, t2] = META.face_eyes;
+    const ax = er[0] * W, ay = er[1] * H, bx = el[0] * W, by = el[1] * H;
+    const dx = t2[0] - t1[0], dy = t2[1] - t1[1], den = dx * dx + dy * dy;
+    const kr = ((bx - ax) * dx + (by - ay) * dy) / den, ki = ((by - ay) * dx - (bx - ax) * dy) / den;
+    const pts = META.face.map(([x, y]) => { const vx = x - t1[0], vy = y - t1[1]; return [ax + vx * kr - vy * ki, ay + vx * ki + vy * kr]; });
+    const ddx = n[0] * W - pts[30][0], ddy = n[1] * H - pts[30][1];
+    const wgt = i => ({27: .25, 28: .5, 29: .75, 30: 1, 31: 1, 32: 1, 33: 1, 34: 1, 35: 1})[i] ?? (i >= 48 ? .5 : i <= 16 ? .2 : 0);
+    return pts.map(([x, y], i) => [r4((x + ddx * wgt(i)) / W), r4((y + ddy * wgt(i)) / H)]);
+  }
+  function feet3d(body, W, H) {
+    const out = [];
+    for (const [side, inward] of [['left', -1], ['right', 1]]) {
+      const kn = body[LEGS[side][1]], an = body[LEGS[side][2]];
+      if (!kn || !an) { out.push(null, null, null); continue; }
+      const L = Math.max(1, Math.hypot((kn[0] - an[0]) * W, (kn[1] - an[1]) * H, ((kn[2] || 0) - (an[2] || 0)) * H));
+      for (const [dx, dy, dz] of [[inward * .06, .18, -.38], [-inward * .08, .18, -.3], [0, .1, .12]])
+        out.push([an[0] + dx * L / W, an[1] + dy * L / H, (an[2] || 0) + dz * L / H]);
+    }
+    return out;
+  }
+  /* what is drawn: per person {body, right_hand, left_hand, face, feet} in 0..1, as the camera sees it */
+  function compose(S) {
+    return S.people.map(p => {
+      const b = p.body.map(j => project(j, S.W, S.H, S.cam, S.center));
+      const [farEye, farEar] = S.cam.yaw > 0 ? [14, 16] : [15, 17];      // the far side goes behind the head
+      if (Math.abs(S.cam.yaw) >= 30) b[farEar] = null;
+      if (Math.abs(S.cam.yaw) >= 55) b[farEye] = null;
+      const body = b.map(j => j && [r4(j[0]), r4(j[1])]);
+      const o = {body, right_hand: null, left_hand: null, face: null, feet: null};
+      for (const side of ['right', 'left']) if (p.hands[side]) o[side + '_hand'] = handPoints(p.hands[side], body, side, S.W, S.H);
+      if (S.face) o.face = facePoints(body, S.W, S.H);
+      if (S.feet) o.feet = feet3d(p.body, S.W, S.H).map(j => { const q = project(j, S.W, S.H, S.cam, S.center); return q && [r4(q[0]), r4(q[1])]; });
+      return o;
+    });
+  }
+  function fromSaved(kp, W, H) {             // a saved pose or one read from a photo -> editor people
+    if (kp?.edit?.people3d) return kp.edit.people3d.map(p => ({body: clone(p.body), hands: clone(p.hands || {right: 'relaxed', left: 'relaxed'})}));
+    return (kp?.people || []).map(p => {
+      const d = Array.isArray(p) ? {body: p} : p;
+      const body = d.body.map(j => j && [j[0], j[1], 0]);
+      const hands = {};
+      for (const side of ['right', 'left']) {
+        const pts = d[side + '_hand'];
+        hands[side] = pts && pts.every(Boolean) ? pts.map(q => handLocal(q, d.body, side, W, H)) : 'relaxed';
+        if (Array.isArray(hands[side]) && hands[side].some(v => !v)) hands[side] = 'relaxed';
+      }
+      return {body, hands};
+    });
+  }
 
   async function open(opts = {}) {
     try { await meta(); } catch (e) { toast(e.message); return; }
-    let W = 832, H = 1216, people = [], sel = 0, showBg = true, history = [], aspect = '2:3', busyRead = false;
-    let bg = opts.bg || null, bgRec = null, name = '', savedAs = null;     // savedAs: {id, key} of the last save
+    const S = {W: 832, H: 1216, people: [], cam: {yaw: 0, pitch: 0}, center: null, face: true, feet: true};
+    let sel = 0, showBg = true, history = [], aspect = '2:3', busyRead = false, ik = store.get('pose.ik', true);
+    let fingers = false, handSide = 'both', bg = opts.bg || null, bgRec = null, name = '', savedAs = null;
     if (bg) {
       try { bgRec = await api.get(`/api/images/${bg}`); } catch { bg = null; }
-      if (bgRec) [W, H] = canvasSize(bgRec.width, bgRec.height);
+      if (bgRec) { [S.W, S.H] = canvasSize(bgRec.width, bgRec.height); aspect = null; }
     }
     const start = opts.start ? await api.get(`/api/images/${opts.start}`).catch(() => null) : null;
     if (start?.keypoints?.people?.length) {
-      people = clone(start.keypoints.people);
-      if (!bg) { [W, H] = canvasSize(start.width, start.height); aspect = null; }
-    } else people = [fitPreset('stand', W, H)];
+      if (!bg) { [S.W, S.H] = canvasSize(start.width, start.height); aspect = null; }
+      S.people = fromSaved(start.keypoints, S.W, S.H);
+      const ed = start.keypoints.edit; if (ed) { S.cam = {...S.cam, ...(ed.camera || {})}; S.face = ed.face ?? true; S.feet = ed.feet ?? true; }
+    } else S.people = [{body: preset3d('stand', S.W, S.H), hands: {right: 'relaxed', left: 'relaxed'}}];
+    const recenter = () => { S.center = sceneCenter(S.people, S.W, S.H); };
+    recenter();
 
     const d = document.createElement('dialog'); d.className = 'posedlg';
     d.innerHTML = `<div class="phead"><h3>${esc(opts.title || '뼈대로 자세 만들기')}</h3><button type="button" class="px" data-close aria-label="닫기">×</button></div>
@@ -696,85 +799,129 @@ const PoseEd = (() => {
       <div class="pside"></div></div>`;
     document.body.appendChild(d);
     const stage = d.querySelector('.pstage'), svg = d.querySelector('svg'), bgImg = d.querySelector('.pstage img'), side = d.querySelector('.pside');
-    if (bg) { bgImg.src = imgUrl(bg); }
+    const wrap = d.querySelector('.pstagewrap');
+    if (bg) bgImg.src = imgUrl(bg);
     const close = () => { d.close(); d.remove(); };
     d.addEventListener('close', () => d.remove());
+    const snap = () => { history.push(clone({people: S.people, W: S.W, H: S.H, cam: S.cam, sel})); if (history.length > 60) history.shift(); };
 
-    const snap = () => { history.push(clone({people, W, H, sel})); if (history.length > 50) history.shift(); };
-    function placeholder(person) {
-      const t = fitPreset('stand', W, H);
-      const ref = person[1] ? 1 : person.findIndex(j => j);
-      if (ref < 0) return t;
-      const dx = person[ref][0] - t[ref][0], dy = person[ref][1] - t[ref][1];
-      return t.map(([x, y]) => [x + dx, y + dy]);
-    }
-    const wrap = d.querySelector('.pstagewrap');
-    function fitStage() {                              // the canvas shape, as big as fits
+    function fitStage() {
       const cs = getComputedStyle(wrap);
       const aw = wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       const ah = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-      const k = Math.max(0.01, Math.min(aw / W, ah / H));
-      stage.style.width = Math.floor(W * k) + 'px'; stage.style.height = Math.floor(H * k) + 'px';
+      const k = Math.max(0.01, Math.min(aw / S.W, ah / S.H));
+      stage.style.width = Math.floor(S.W * k) + 'px'; stage.style.height = Math.floor(S.H * k) + 'px';
     }
     new ResizeObserver(fitStage).observe(wrap);
+    function placeholder(body2d) {
+      const t = preset3d('stand', S.W, S.H).map(j => project(j, S.W, S.H, S.cam, S.center));
+      const ref = body2d[1] ? 1 : body2d.findIndex(j => j);
+      if (ref < 0) return t;
+      const dx = body2d[ref][0] - t[ref][0], dy = body2d[ref][1] - t[ref][1];
+      return t.map(([x, y]) => [x + dx, y + dy]);
+    }
+    let drawn = [];
     function paintStage() {
       fitStage();
       bgImg.hidden = !bg || !showBg;
-      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      const r = Math.max(W, H) / 95, sw = Math.max(W, H) / 110;
+      svg.setAttribute('viewBox', `0 0 ${S.W} ${S.H}`);
+      drawn = compose(S);
+      const W = S.W, H = S.H, r = Math.max(W, H) / 95, sw = Math.max(W, H) / 110, hr = Math.max(W, H) / 260;
       const rgb = c => `rgb(${c.join(',')})`;
       let h = '';
-      people.forEach((p, pi) => {
+      drawn.forEach((p, pi) => {
         const on = pi === sel;
-        h += `<g class="pp ${on ? 'on' : ''}" data-p="${pi}">`;
+        h += `<g class="pp ${on ? 'on' : ''}">`;
         META.limbs.forEach(([a, b], i) => {
-          const A = p[a - 1], B = p[b - 1]; if (!A || !B) return;
+          const A = p.body[a - 1], B = p.body[b - 1]; if (!A || !B) return;
           h += `<line data-p="${pi}" data-limb="1" x1="${A[0] * W}" y1="${A[1] * H}" x2="${B[0] * W}" y2="${B[1] * H}" stroke="${rgb(META.colors[i % 18])}" stroke-width="${sw}" stroke-linecap="round"/>`;
         });
-        if (on) placeholder(p).forEach(([x, y], j) => { if (!p[j]) h += `<circle class="miss" data-p="${pi}" data-j="${j}" cx="${x * W}" cy="${y * H}" r="${r}"><title>${esc(META.joints_ko[j])} (빠짐: 끌어서 넣기)</title></circle>`; });
-        p.forEach((pt, j) => {
-          if (!pt) return;
-          h += `<circle class="jt" data-p="${pi}" data-j="${j}" cx="${pt[0] * W}" cy="${pt[1] * H}" r="${r}" fill="${rgb(META.colors[j % 18])}"><title>${esc(META.joints_ko[j])}</title></circle>`;
-          h += `<circle class="hit" data-p="${pi}" data-j="${j}" cx="${pt[0] * W}" cy="${pt[1] * H}" r="${r * 2.4}"/>`;
+        for (const sd of ['right_hand', 'left_hand']) {
+          const hp = p[sd]; if (!hp) continue;
+          META.hand_edges.forEach(([a, b], i) => { h += `<line class="hl" x1="${hp[a][0] * W}" y1="${hp[a][1] * H}" x2="${hp[b][0] * W}" y2="${hp[b][1] * H}" stroke="${rgb(META.hand_colors[i])}" stroke-width="${hr}"/>`; });
+          hp.forEach((q, k) => {
+            h += `<circle class="hd" cx="${q[0] * W}" cy="${q[1] * H}" r="${hr * (on && fingers ? 1.3 : 0.9)}"/>`;
+            if (on && fingers && k) h += `<circle class="hit fh" data-p="${pi}" data-hand="${sd.split('_')[0]}" data-k="${k}" cx="${q[0] * W}" cy="${q[1] * H}" r="${hr * 4}"/>`;
+          });
+        }
+        (p.feet || []).forEach((q, i) => { if (q) h += `<circle class="ft" cx="${q[0] * W}" cy="${q[1] * H}" r="${r * .6}" fill="${rgb(META.colors[i % 18])}"/>`; });
+        (p.face || []).forEach(q => { h += `<circle class="fc" cx="${q[0] * W}" cy="${q[1] * H}" r="${hr}"/>`; });
+        if (on && !fingers) placeholder(p.body).forEach((q, j) => { if (!p.body[j] && !S.people[pi].body[j]) h += `<circle class="miss" data-p="${pi}" data-j="${j}" cx="${q[0] * W}" cy="${q[1] * H}" r="${r}"><title>${esc(META.joints_ko[j])} (빠짐: 끌어서 넣기)</title></circle>`; });
+        p.body.forEach((q, j) => {
+          if (!q) return;
+          h += `<circle class="jt" cx="${q[0] * W}" cy="${q[1] * H}" r="${r}" fill="${rgb(META.colors[j % 18])}"><title>${esc(META.joints_ko[j])}</title></circle>`;
+          if (!(on && fingers)) h += `<circle class="hit" data-p="${pi}" data-j="${j}" cx="${q[0] * W}" cy="${q[1] * H}" r="${r * 2.4}"/>`;
         });
         h += '</g>';
       });
       svg.innerHTML = h;
     }
+    function handButtons(sideKey) {
+      const p = S.people[sel]; if (!p) return '';
+      const cur = sideKey === 'both' ? (p.hands.right === p.hands.left ? p.hands.right : null) : p.hands[sideKey];
+      return META.hands.map(hd => `<button data-hshape="${hd.id}" aria-pressed="${cur === hd.id}">${esc(hd.name)}</button>`).join('')
+        + `<button data-hshape="" aria-pressed="${cur === null && sideKey !== 'both' ? 'true' : 'false'}">손 없음</button>`;
+    }
     function paintSide() {
       const saved = META.saved || [];
       side.innerHTML = `
-        <p class="note">관절(점)을 끌어서 자세를 만드세요. 선을 끌면 사람 전체가 움직여요. 빈 동그라미는 빠진 관절이에요. 끌어 놓으면 생겨요.</p>
+        <p class="note">관절(점)을 끌어서 자세를 만드세요. 선을 끌면 사람 전체가 움직이고, 점을 두 번 누르면 숨겨져요.</p>
         ${bg ? `<div class="field"><div class="seg2"><button data-pact="read" ${busyRead ? 'disabled' : ''}>${busyRead ? '읽는 중…' : '사진에서 뼈대 읽기'}</button>
           <button data-pact="bg" aria-pressed="${showBg}">사진 ${showBg ? '보임' : '숨김'}</button></div></div>` : ''}
-        <div class="field"><span>모양 (${people.length ? `${sel + 1}번 사람` : '사람 없음'})</span><div class="seg2">${META.presets.map(p => `<button data-preset="${p.id}">${esc(p.name)}</button>`).join('')}</div></div>
+        <div class="field"><span>모양 (${S.people.length ? `${sel + 1}번 사람` : '사람 없음'})</span><div class="seg2">${META.presets.map(p => `<button data-preset="${p.id}">${esc(p.name)}</button>`).join('')}</div></div>
         <div class="field"><span>사람</span><div class="seg2">
-          ${people.map((_, i) => `<button data-psel="${i}" aria-pressed="${i === sel}">${i + 1}번</button>`).join('')}
-          <button data-pact="add">+ 사람</button><button data-pact="del" ${people.length ? '' : 'disabled'}>지우기</button>
-          <button data-pact="flip" ${people.length ? '' : 'disabled'}>좌우 뒤집기</button><button data-pact="undo" ${history.length ? '' : 'disabled'}>되돌리기</button></div></div>
+          ${S.people.map((_, i) => `<button data-psel="${i}" aria-pressed="${i === sel}">${i + 1}번</button>`).join('')}
+          <button data-pact="add">+ 사람</button><button data-pact="del" ${S.people.length ? '' : 'disabled'}>지우기</button>
+          <button data-pact="flip" ${S.people.length ? '' : 'disabled'}>좌우 뒤집기</button><button data-pact="undo" ${history.length ? '' : 'disabled'}>되돌리기</button></div></div>
+        <div class="field"><span>팔다리</span><div class="seg2">
+          <button data-pact="ik" aria-pressed="${ik}">손발 끌면 팔다리 따라오기</button>
+          <button data-copy="left">왼쪽 → 오른쪽 복사</button><button data-copy="right">오른쪽 → 왼쪽 복사</button></div></div>
+        <div class="field"><span>손</span><div class="seg2">${[['both', '양손'], ['right', '오른손'], ['left', '왼손']].map(([k, n]) => `<button data-hside="${k}" aria-pressed="${k === handSide}">${n}</button>`).join('')}
+          <button data-pact="fingers" aria-pressed="${fingers}">손가락 끌기</button></div>
+          <div class="seg2" style="margin-top:6px">${handButtons(handSide)}</div></div>
+        <div class="field"><span>카메라 각도 · 옆 ${Math.round(S.cam.yaw)}° · 위 ${Math.round(S.cam.pitch)}°</span>
+          <input type="range" id="pYaw" min="-90" max="90" step="5" value="${S.cam.yaw}" aria-label="옆에서 보기">
+          <input type="range" id="pPitch" min="-60" max="60" step="5" value="${S.cam.pitch}" aria-label="위에서 보기">
+          <div class="seg2"><button data-cam="0,0">정면</button><button data-cam="45,0">비스듬히</button><button data-cam="90,0">옆</button><button data-cam="0,35">위에서</button><button data-cam="0,-25">아래에서</button></div></div>
+        <label class="switch"><input type="checkbox" id="pFace" ${S.face ? 'checked' : ''}><span>얼굴 (눈·코 방향을 따라감)</span></label>
+        <label class="switch" style="margin-bottom:14px"><input type="checkbox" id="pFeet" ${S.feet ? 'checked' : ''}><span>발</span></label>
         ${bg ? '' : `<div class="field"><span>비율</span><div class="seg2">${ASPECTS.map(([k, , , n]) => `<button data-asp="${k}" aria-pressed="${k === aspect}">${n} ${k}</button>`).join('')}</div></div>`}
         ${saved.length ? `<div class="field"><span>저장된 자세</span><div class="vpick">${saved.map(s => `<button data-saved="${s.id}" title="${esc(s.name)}"><img src="${thumbUrl(s.id)}" alt="${esc(s.name)}"></button>`).join('')}</div></div>` : ''}
         <div class="field"><input id="pName" placeholder="이름 붙여 저장 (예: 의자에 기대기)" value="${esc(name)}" maxlength="60"></div>
-        <div class="field"><div class="seg2"><button data-pact="use" aria-pressed="true" ${people.length ? '' : 'disabled'}>${esc(opts.useLabel || '이 자세로 그리기')}</button>
-          <button data-pact="save" ${people.length ? '' : 'disabled'}>저장만</button></div></div>`;
+        <div class="field"><div class="seg2"><button data-pact="use" aria-pressed="true" ${S.people.length ? '' : 'disabled'}>${esc(opts.useLabel || '이 자세로 그리기')}</button>
+          <button data-pact="save" ${S.people.length ? '' : 'disabled'}>저장만</button></div></div>`;
     }
     const paint = () => { paintStage(); paintSide(); };
 
     function setAspect(k) {
       const a = ASPECTS.find(x => x[0] === k); if (!a) return;
       snap();
-      const [nW, nH] = canvasSize(a[1], a[2]); const s = Math.min(nW / W, nH / H);
-      people = people.map(p => p.map(j => j && [+(0.5 + (j[0] * W - W / 2) * s / nW).toFixed(4), +(0.5 + (j[1] * H - H / 2) * s / nH).toFixed(4)]));
-      W = nW; H = nH; aspect = k; paint();
+      const [nW, nH] = canvasSize(a[1], a[2]); const s = Math.min(nW / S.W, nH / S.H);
+      S.people.forEach(p => { p.body = p.body.map(j => j && [r4(0.5 + (j[0] * S.W - S.W / 2) * s / nW), r4(0.5 + (j[1] * S.H - S.H / 2) * s / nH), r4((j[2] || 0) * S.H * s / nH)]); });
+      S.W = nW; S.H = nH; aspect = k; recenter(); paint();
     }
     function addPerson() {
       snap();
-      const p = fitPreset('stand', W, H);
-      const mean = people.length ? people.flat().filter(Boolean).reduce((a, j) => a + j[0], 0) / people.flat().filter(Boolean).length : 0.5;
-      const dx = people.length ? (mean > 0.5 ? 0.27 : 0.73) - p[1][0] : 0;
-      const k = people.length ? 0.9 : 1, cx = p[1][0], cy = p[1][1];
-      people.push(p.map(([x, y]) => [+(cx + (x - cx) * k + dx).toFixed(4), +(cy + (y - cy) * k).toFixed(4)]));
-      sel = people.length - 1; paint();
+      const b = preset3d('stand', S.W, S.H);
+      const xs = S.people.flatMap(p => p.body).filter(Boolean).map(j => j[0]);
+      const mean = xs.length ? xs.reduce((a, v) => a + v, 0) / xs.length : 0.5;
+      const dx = S.people.length ? (mean > 0.5 ? 0.27 : 0.73) - b[1][0] : 0;
+      const k = S.people.length ? 0.9 : 1, cx = b[1][0], cy = b[1][1];
+      S.people.push({body: b.map(([x, y, z]) => [r4(cx + (x - cx) * k + dx), r4(cy + (y - cy) * k), r4(z * k)]), hands: {right: 'relaxed', left: 'relaxed'}});
+      sel = S.people.length - 1; recenter(); paint();
+    }
+    function copySide(src) {
+      const dst = src === 'left' ? 'right' : 'left', p = S.people[sel]; if (!p) return;
+      snap();
+      for (const g of [ARMS, LEGS]) {
+        const a = g[src], b = g[dst]; if (!p.body[a[0]] || !p.body[b[0]]) continue;
+        for (let n = 1; n < 3; n++) {
+          const js = p.body[a[n]];
+          p.body[b[n]] = js && [r4(p.body[b[0]][0] - (js[0] - p.body[a[0]][0])), js[1], js[2] || 0];
+        }
+      }
+      p.hands[dst] = clone(p.hands[src]);
+      paint();
     }
     async function readPhoto() {
       if (!bg || busyRead) return;
@@ -782,94 +929,155 @@ const PoseEd = (() => {
       try {
         const j = await pollJob((await api.post(`/api/images/${bg}/read-pose`)).id);
         if (j.status !== 'done') throw new Error(j.error || '뼈대를 읽지 못했어요');
-        snap(); people = clone(j.result.keypoints.people); sel = 0;
-        toast(`${people.length}명의 뼈대를 읽었어요`);
+        snap(); S.people = fromSaved(j.result.keypoints, S.W, S.H); S.cam = {yaw: 0, pitch: 0}; sel = 0; recenter();
+        toast(`${S.people.length}명의 뼈대를 읽었어요`);
       } catch (e) { toast(e.message, 6000); }
       busyRead = false; paint();
     }
     async function save(use) {
       name = (d.querySelector('#pName')?.value || '').trim();
       if (!use && !name) { d.querySelector('#pName').focus(); toast('저장할 이름을 적어 주세요'); return; }
-      const key = JSON.stringify([people, W, H, name]);
+      const people = compose(S);
+      const edit = {people3d: clone(S.people), camera: S.cam, face: S.face, feet: S.feet};
+      const key = JSON.stringify([people, S.W, S.H, name]);
       if (savedAs && savedAs.key === key) {                 // nothing changed since "저장만": use that one
         if (use) { close(); await opts.onUse?.(savedAs.id); } else toast('이미 저장했어요');
         return;
       }
       try {
-        const rec = await api.post('/api/poses', {people, width: W, height: H, name, parent_id: bg});
+        const rec = await api.post('/api/poses', {people, width: S.W, height: S.H, name, parent_id: bg, edit});
         savedAs = {id: rec.id, key};
         META = null; await meta().catch(() => {});
         if (use) { close(); await opts.onUse?.(rec.id); } else { toast(`'${name}' 자세를 저장했어요`); paintSide(); }
       } catch (e) { toast(e.message, 6000); }
     }
 
-    /* dragging: a joint moves itself, a limb moves the whole person */
+    /* dragging: a joint moves itself (with IK the elbow/knee follows a wrist/ankle), a limb moves the person,
+       in finger mode the hand points move. Everything happens on screen and goes back to model space. */
     let drag = null;
-    const toCanvas = e => { const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; const q = pt.matrixTransform(svg.getScreenCTM().inverse()); return [q.x / W, q.y / H]; };
+    const toCanvas = e => { const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; const q = pt.matrixTransform(svg.getScreenCTM().inverse()); return [q.x / S.W, q.y / S.H]; };
+    const scr = (pi, j) => project(S.people[pi].body[j], S.W, S.H, S.cam, S.center);
+    const setScr = (pi, j, q, depth) => { S.people[pi].body[j] = unproject(q, depth, S.W, S.H, S.cam, S.center); };
+    function ikMove(pi, j, q) {
+      const limb = [...Object.values(ARMS), ...Object.values(LEGS)].find(l => l[2] === j);
+      const A = limb && scr(pi, limb[0]), B = limb && scr(pi, limb[1]), C = scr(pi, j);
+      if (!A || !B || !C) return false;
+      const W = S.W, H = S.H, P = v => [v[0] * W, v[1] * H];
+      const [ax, ay] = P(A), [bx, by] = P(B), [cx, cy] = P(C), [tx, ty] = P(q);
+      const l1 = Math.hypot(bx - ax, by - ay), l2 = Math.hypot(cx - bx, cy - by);
+      let dd = Math.hypot(tx - ax, ty - ay); if (dd < 1e-3 || l1 < 1 || l2 < 1) return false;
+      dd = Math.min(l1 + l2 - 0.01, Math.max(Math.abs(l1 - l2) + 0.01, dd));
+      const ux = (tx - ax) / Math.hypot(tx - ax, ty - ay), uy = (ty - ay) / Math.hypot(tx - ax, ty - ay);
+      const bend = Math.sign((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) || 1;
+      const ang = Math.acos(Math.max(-1, Math.min(1, (l1 * l1 + dd * dd - l2 * l2) / (2 * l1 * dd))));
+      const ca = Math.cos(-bend * ang), sa = Math.sin(-bend * ang);
+      const nb = [(ax + l1 * (ux * ca - uy * sa)) / W, (ay + l1 * (ux * sa + uy * ca)) / H];
+      setScr(pi, limb[1], nb, B[2]);
+      setScr(pi, j, [(ax + ux * dd) / W, (ay + uy * dd) / H], C[2]);
+      return true;
+    }
     svg.addEventListener('pointerdown', e => {
       const t = e.target.closest('[data-p]'); if (!t) return;
       e.preventDefault();
       const pi = +t.dataset.p; snap(); sel = pi;
-      const [x, y] = toCanvas(e);
-      if (t.dataset.j !== undefined) {
+      const q = toCanvas(e);
+      if (t.dataset.hand) {
+        const sd = t.dataset.hand, p = S.people[pi], body2d = drawn[pi].body;
+        if (typeof p.hands[sd] === 'string') p.hands[sd] = clone((META.hands.find(x => x.id === p.hands[sd]) || META.hands[0]).points);
+        drag = {pi, hand: sd, k: +t.dataset.k, body2d};
+      } else if (t.dataset.j !== undefined) {
         const j = +t.dataset.j;
-        if (!people[pi][j]) people[pi][j] = [x, y];
-        drag = {pi, j};
-      } else if (t.dataset.limb) drag = {pi, move: [x, y]};
+        if (!S.people[pi].body[j]) { const n = scr(pi, 1); setScr(pi, j, q, n ? n[2] : 0); }
+        drag = {pi, j, depth: scr(pi, j)[2]};
+      } else if (t.dataset.limb) drag = {pi, move: q};
       svg.setPointerCapture(e.pointerId); paint();
     });
     svg.addEventListener('pointermove', e => {
       if (!drag) return;
-      const [x, y] = toCanvas(e);
-      const cl = v => +Math.min(1.2, Math.max(-0.2, v)).toFixed(4);
-      if (drag.j !== undefined) people[drag.pi][drag.j] = [cl(x), cl(y)];
-      else { const dx = x - drag.move[0], dy = y - drag.move[1]; drag.move = [x, y]; people[drag.pi] = people[drag.pi].map(j => j && [cl(j[0] + dx), cl(j[1] + dy)]); }
+      const q = toCanvas(e).map(v => Math.min(1.2, Math.max(-0.2, v)));
+      const p = S.people[drag.pi];
+      if (drag.hand) { const lp = handLocal(q, drag.body2d, drag.hand, S.W, S.H); if (lp) p.hands[drag.hand][drag.k] = lp; }
+      else if (drag.j !== undefined) { if (!(ik && [4, 7, 10, 13].includes(drag.j) && ikMove(drag.pi, drag.j, q))) setScr(drag.pi, drag.j, q, drag.depth); }
+      else {
+        const dx = q[0] - drag.move[0], dy = q[1] - drag.move[1]; drag.move = q;
+        p.body = p.body.map(j => { if (!j) return j; const s = project(j, S.W, S.H, S.cam, S.center); return unproject([s[0] + dx, s[1] + dy], s[2], S.W, S.H, S.cam, S.center); });
+      }
       paintStage();
     });
     const end = () => { if (drag) { drag = null; paintSide(); } };
     svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
-    svg.addEventListener('dblclick', e => {           // double-click a joint: hide it
-      const t = e.target.closest('[data-j]'); if (!t || !people[+t.dataset.p][+t.dataset.j]) return;
-      snap(); people[+t.dataset.p][+t.dataset.j] = null; paint();
+    svg.addEventListener('dblclick', e => {
+      const t = e.target.closest('[data-j]'); if (!t || !S.people[+t.dataset.p].body[+t.dataset.j]) return;
+      snap(); S.people[+t.dataset.p].body[+t.dataset.j] = null; paint();
     });
 
+    d.addEventListener('input', e => {
+      if (e.target.id === 'pName') name = e.target.value;
+      if (e.target.id === 'pYaw' || e.target.id === 'pPitch') {
+        S.cam = {yaw: +d.querySelector('#pYaw').value, pitch: +d.querySelector('#pPitch').value};
+        paintStage(); d.querySelector('.pside .field:has(#pYaw) > span').textContent = `카메라 각도 · 옆 ${S.cam.yaw}° · 위 ${S.cam.pitch}°`;
+      }
+    });
+    d.addEventListener('change', e => {
+      if (e.target.id === 'pYaw' || e.target.id === 'pPitch') snap();
+      if (e.target.id === 'pFace') { S.face = e.target.checked; paintStage(); }
+      if (e.target.id === 'pFeet') { S.feet = e.target.checked; paintStage(); }
+    });
     d.addEventListener('click', async e => {
       if (e.target.closest('[data-close]')) { close(); return; }
       const pr = e.target.closest('[data-preset]');
       if (pr) {
         snap();
-        const np = fitPreset(pr.dataset.preset, W, H);
-        if (!people.length) { people.push(np); sel = 0; }
+        const np = preset3d(pr.dataset.preset, S.W, S.H);
+        if (!S.people.length) { S.people.push({body: np, hands: {right: 'relaxed', left: 'relaxed'}}); sel = 0; }
         else {                                           // keep the person where they stand
-          const old = people[sel], ref = old[1] ? 1 : old.findIndex(j => j);
+          const old = S.people[sel].body, ref = old[1] ? 1 : old.findIndex(j => j);
           const dx = ref >= 0 ? old[ref][0] - np[ref][0] : 0;
-          people[sel] = np.map(([x, y]) => [+(x + dx).toFixed(4), y]);
+          S.people[sel].body = np.map(([x, y, z]) => [r4(x + dx), y, z]);
         }
-        paint(); return;
+        recenter(); paint(); return;
       }
       const ps = e.target.closest('[data-psel]'); if (ps) { sel = +ps.dataset.psel; paint(); return; }
       const as = e.target.closest('[data-asp]'); if (as) { setAspect(as.dataset.asp); return; }
+      const cp = e.target.closest('[data-copy]'); if (cp) { copySide(cp.dataset.copy); return; }
+      const hs = e.target.closest('[data-hside]'); if (hs) { handSide = hs.dataset.hside; paintSide(); return; }
+      const hsh = e.target.closest('[data-hshape]');
+      if (hsh && S.people[sel]) {
+        snap(); const v = hsh.dataset.hshape || null;
+        for (const s of handSide === 'both' ? ['right', 'left'] : [handSide]) S.people[sel].hands[s] = v;
+        paint(); return;
+      }
+      const cm = e.target.closest('[data-cam]');
+      if (cm) { snap(); const [y, p] = cm.dataset.cam.split(',').map(Number); S.cam = {yaw: y, pitch: p}; paint(); return; }
       const sv = e.target.closest('[data-saved]');
       if (sv) {
         const s = META.saved.find(x => x.id === sv.dataset.saved); if (!s?.keypoints) return;
-        snap(); people = clone(s.keypoints.people); sel = 0; name = s.name || '';
-        if (!bg) { W = s.width; H = s.height; aspect = null; }
-        paint(); return;
+        snap();
+        if (!bg) { S.W = s.width; S.H = s.height; aspect = null; }
+        S.people = fromSaved(s.keypoints, S.W, S.H); sel = 0; name = s.name || '';
+        const ed = s.keypoints.edit; S.cam = {yaw: 0, pitch: 0, ...(ed?.camera || {})};
+        if (ed) { S.face = ed.face ?? true; S.feet = ed.feet ?? true; }
+        recenter(); paint(); return;
       }
       const a = e.target.closest('[data-pact]'); if (!a) return;
       const act = a.dataset.pact;
       if (act === 'add') addPerson();
-      if (act === 'del' && people.length) { snap(); people.splice(sel, 1); sel = Math.max(0, sel - 1); paint(); }
-      if (act === 'flip' && people.length) { snap(); const m = META.mirror; people[sel] = people[sel].map((_, i) => { const j = people[sel][m[i]]; return j && [+(1 - j[0]).toFixed(4), j[1]]; }); paint(); }
-      if (act === 'undo' && history.length) { const h = history.pop(); people = h.people; W = h.W; H = h.H; sel = Math.min(h.sel, Math.max(0, people.length - 1)); paint(); }
+      if (act === 'del' && S.people.length) { snap(); S.people.splice(sel, 1); sel = Math.max(0, sel - 1); recenter(); paint(); }
+      if (act === 'flip' && S.people.length) {
+        snap(); const m = META.mirror, p = S.people[sel];
+        p.body = p.body.map((_, i) => { const j = p.body[m[i]]; return j && [r4(1 - j[0]), j[1], j[2] || 0]; });
+        p.hands = {right: p.hands.left, left: p.hands.right}; paint();
+      }
+      if (act === 'undo' && history.length) { const h = history.pop(); S.people = h.people; S.W = h.W; S.H = h.H; S.cam = h.cam; sel = Math.min(h.sel, Math.max(0, S.people.length - 1)); recenter(); paint(); }
+      if (act === 'ik') { ik = !ik; store.set('pose.ik', ik); paintSide(); }
+      if (act === 'fingers') { fingers = !fingers; paint(); }
       if (act === 'bg') { showBg = !showBg; paint(); }
       if (act === 'read') readPhoto();
       if (act === 'use') save(true);
       if (act === 'save') save(false);
     });
-    d.addEventListener('input', e => { if (e.target.id === 'pName') name = e.target.value; });
     paint(); d.showModal();
-    if (opts.autoRead && bg && !(start?.keypoints)) readPhoto();
+    if (opts.autoRead && bg && !start?.keypoints) readPhoto();
   }
   return {open};
 })();

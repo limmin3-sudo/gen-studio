@@ -5,6 +5,7 @@ import asyncio
 import re
 import base64
 import io
+import json
 import random
 import time
 import uuid
@@ -267,11 +268,34 @@ class UpscaleRequest(BaseModel):
 
 
 class PoseSaveRequest(BaseModel):
-    people: list = Field(..., description="사람마다 관절 18개 [x, y] (0~1) 또는 null, OpenPose 순서")
+    people: list = Field(..., description="사람마다 {body: 관절 18개, right_hand/left_hand: 21개, face: 68개, feet: 6개}"
+                                            " 각 점 [x, y] (0~1) 또는 null. 관절 18개 목록만 줘도 됨")
     width: int = Field(768, ge=256, le=2048)
     height: int = Field(1152, ge=256, le=2048)
     name: str = Field("", max_length=60, description="자세 이름 (저장해 두고 다시 쓰기)")
     parent_id: str | None = Field(None, description="어느 사진에서 시작했는지")
+    edit: dict | None = Field(None, description="편집기가 다시 열 때 쓰는 값 (깊이, 카메라, 손 모양)")
+
+
+class PoseKey(BaseModel):
+    pose_id: str = Field(..., description="뼈대 자세(make_pose / 편집기) 또는 자세를 따라 할 사진")
+    at: float = Field(..., description="몇 초에 이 자세 (0 = 처음, -1 = 마지막)")
+
+
+class PoseVideoRequest(BaseModel):
+    image_id: str = Field(..., description="움직일 사람·장면 사진")
+    poses: list[PoseKey] = Field(..., min_length=1, max_length=6)
+    prompt: str = Field("", description="장면·움직임·카메라·소리")
+    engine: Literal["ltx", "wan"] = "ltx"
+    keep_start: bool = Field(True, description="원래 사진을 첫 장면으로 (0초에 자세가 있으면 그 자세가 첫 장면)")
+    seconds: int = Field(5, ge=2, le=20)
+    quality: Literal["480p", "540p", "720p"] = "720p"
+    fps: int = Field(24, ge=12, le=50, description="LTX만")
+    audio: bool = Field(True, description="LTX만")
+    image_strength: float = Field(0.7, ge=0.1, le=1.0, description="LTX만")
+    smooth: bool = Field(True, description="Wan만: 프레임 보간")
+    negative: str = ""
+    seed: int = -1
 
 
 class ReposeRequest(BaseModel):
@@ -885,6 +909,9 @@ class Engine:
 
     # ------------------------------------------------------------ LTX-2.5: Codex's high-quality video with sound
     def submit_ltx(self, req: LtxRequest) -> Job:
+        return self._enqueue(self._ltx_job(req))
+
+    def _ltx_job(self, req: LtxRequest) -> Job:
         if not self.registry.tool_ready("video_ltx", self.settings.models_dir):
             raise ValueError("LTX-2.5 영상 모델이 없어요. Gen Studio 설정 → 'Codex 전용 고성능 영상'에서 받아 주세요.")
         guides = ltx_guides(req)
@@ -905,7 +932,7 @@ class Engine:
                             "model_name": "LTX-2.5 22B (영상+소리)" if req.audio else "LTX-2.5 22B",
                             "family": "ltx", "width": w, "height": h, "frames": frames, "fps": req.fps, "mode": mode,
                             "guides": [{"image_id": i, "frame": ltx_frame(at, req.seconds, req.fps)} for i, at in guides]})
-        return self._enqueue(job)
+        return job
 
     async def _upload_fit(self, iid: str, w: int, h: int, tag: str) -> tuple[str, bytes]:
         """The picture cropped to cover w×h, uploaded to ComfyUI. Returns (name, png)."""
@@ -969,6 +996,9 @@ class Engine:
         job.result_ids.append(rec["id"])
 
     def submit_video(self, req: VideoRequest) -> Job:
+        return self._enqueue(self._video_job(req))
+
+    def _video_job(self, req: VideoRequest) -> Job:
         src = self.library.get(req.image_id)
         if not src:
             raise KeyError("이미지를 찾을 수 없어요")
@@ -995,7 +1025,7 @@ class Engine:
                   decision={"action": f"영상 {req.seconds}초{keys}", "model_name": "Wan 2.2 I2V 14B",
                             "family": "wan22_i2v", "width": w, "height": h, "frames": frames, "fps": VIDEO_FPS * mult,
                             "smooth": smooth, "multiplier": mult, "steps": req.steps})
-        return self._enqueue(job)
+        return job
 
     async def _run_video(self, job: Job) -> None:
         req = VideoRequest(**job.request)
@@ -1040,6 +1070,67 @@ class Engine:
                      "request": {**req.model_dump(), "seed": -1}},
         }, ext=ext)
         job.result_ids.append(rec["id"])
+
+    # ------------------------------------------------------------ poses -> video
+    def submit_pose_video(self, req: PoseVideoRequest) -> Job:
+        """Each pose becomes a still of the same person (자세 바꾸기), then the stills become keyframes of one clip."""
+        src = self.library.get(req.image_id)
+        if not src:
+            raise KeyError("이미지를 찾을 수 없어요")
+        self._need_still(req.image_id)
+        for k in req.poses:
+            if not self.library.get(k.pose_id):
+                raise KeyError(f"자세를 찾을 수 없어요: {k.pose_id}")
+            self._need_still(k.pose_id)
+        self._reference_model(None)                       # Qwen redraws the person in each pose
+        tool = "video_ltx" if req.engine == "ltx" else "video_i2v"
+        if not self.registry.tool_ready(tool, self.settings.models_dir):
+            raise ValueError("LTX-2.5 영상 모델이 없어요. 설정에서 받아 주세요." if req.engine == "ltx"
+                             else "영상 모델(Wan 2.2 I2V)이 없어요. 설정에서 받아 주세요.")
+        keys = sorted(req.poses, key=lambda k: float("inf") if k.at < 0 or k.at >= req.seconds else k.at)
+        starts = req.keep_start and not any(k.at == 0 for k in keys)
+        if req.engine == "wan" and len(keys) > (2 if starts else 3):
+            raise ValueError("Wan은 처음·가운데·끝 장면까지만 돼요. 자세를 줄이거나 engine=ltx로 해 주세요.")
+        if not starts and keys[0].at != 0 and req.engine == "wan":
+            raise ValueError("Wan은 첫 장면이 필요해요: keep_start=true로 두거나 0초 자세를 넣어 주세요.")
+        job = Job(id=uuid.uuid4().hex[:12], kind="posevideo", request=req.model_dump(),
+                  decision={"action": f"자세 영상 · 자세 {len(keys)}개", "model_name": "Qwen 자세 바꾸기 → "
+                            + ("LTX-2.5" if req.engine == "ltx" else "Wan 2.2"),
+                            "keys": [k.model_dump() for k in keys], "keep_start": starts})
+        return self._enqueue(job)
+
+    async def _run_pose_video(self, job: Job) -> None:
+        req = PoseVideoRequest(**job.request)
+        keys = [PoseKey(**k) for k in job.decision["keys"]]
+        stills = []
+        for i, k in enumerate(keys):
+            job.message = f"자세 장면 {i + 1}/{len(keys)} 만드는 중"
+            job.progress = 0.6 * i / len(keys)
+            sub = self._repose_job(ReposeRequest(image_id=req.image_id, pose=k.pose_id, prompt=req.prompt))
+            await self._run_repose(sub)
+            stills.append(sub.result_ids[0])
+        job.message, job.progress = "영상 만드는 중", 0.6
+        timed = list(zip(stills, keys))
+        first = req.image_id if job.decision["keep_start"] else timed.pop(0)[0]
+        if req.engine == "ltx":
+            end = next((sid for sid, k in timed if k.at < 0 or k.at >= req.seconds), None)
+            mids = [{"image_id": sid, "at": k.at} for sid, k in timed if sid != end]
+            sub = self._ltx_job(LtxRequest(prompt=req.prompt or "natural movement", image_id=first, end_image_id=end,
+                                           keyframes=mids, seconds=req.seconds,
+                                           quality="540p" if req.quality in ("480p", "540p") else "720p",
+                                           fps=req.fps, audio=req.audio, image_strength=req.image_strength,
+                                           negative=req.negative, seed=req.seed))
+            await self._run_ltx(sub)
+        else:
+            end = timed[-1][0] if timed else None
+            mid = timed[0][0] if len(timed) == 2 else None
+            sub = self._video_job(VideoRequest(image_id=first, prompt=req.prompt, end_image_id=end, mid_image_id=mid,
+                                               seconds=min(req.seconds, 10),
+                                               quality="480p" if req.quality == "480p" else "720p",
+                                               smooth=req.smooth, negative=req.negative, seed=req.seed))
+            await self._run_video(sub)
+        job.result_ids += sub.result_ids + stills
+        job.result = {"video_id": sub.result_ids[0], "stills": stills}
 
     # ------------------------------------------------------------ clips: take a frame out, join clips
     def _need_clip(self, vid: str) -> dict:
@@ -1384,6 +1475,9 @@ class Engine:
 
     # ------------------------------------------------------------ change the pose of the person in a picture
     def submit_repose(self, req: ReposeRequest) -> Job:
+        return self._enqueue(self._repose_job(req))
+
+    def _repose_job(self, req: ReposeRequest) -> Job:
         src = self.library.get(req.image_id)
         if not src:
             raise KeyError("이미지를 찾을 수 없어요")
@@ -1404,7 +1498,7 @@ class Engine:
         job = Job(id=uuid.uuid4().hex[:12], kind="repose", request=req.model_dump(),
                   decision={"action": "자세 바꾸기", "model_id": m.id, "model_name": m.name, "family": m.family.id,
                             "pose": pose})
-        return self._enqueue(job)
+        return job
 
     async def _run_repose(self, job: Job) -> None:
         req = ReposeRequest(**job.request)
@@ -1587,6 +1681,8 @@ class Engine:
             await self._run_video_frame(job)
         elif job.kind == "readpose":
             await self._run_read_pose(job)
+        elif job.kind == "posevideo":
+            await self._run_pose_video(job)
         elif job.kind == "join":
             await self._run_join(job)
         elif job.kind == "repose":
@@ -1741,9 +1837,14 @@ class Engine:
             raise KeyError(f"이미지를 찾을 수 없어요: {req.parent_id}")
         png = poses.render(people, req.width, req.height)
         name = req.name.strip()
+        kp = {"people": people}
+        if req.edit is not None:
+            if len(json.dumps(req.edit)) > 200_000:
+                raise ValueError("편집 정보가 너무 커요")
+            kp["edit"] = req.edit
         return self.library.add(png, {"kind": "pose", "source": "gen-studio", "parent_id": req.parent_id,
                                       "label": f"자세: {name}" if name else "뼈대 자세", "prompt": "",
-                                      "pose_name": name or None, "keypoints": {"people": people}})
+                                      "pose_name": name or None, "keypoints": kp})
 
     def saved_poses(self) -> list[dict]:
         return [r for r in self.library.list(limit=100000) if r.get("kind") == "pose" and r.get("pose_name")]

@@ -387,8 +387,13 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .posedlg .hit{fill:transparent;cursor:grab}
 .posedlg line{cursor:move}
 .posedlg .miss{fill:transparent;stroke:#bbb;stroke-width:2;stroke-dasharray:4 3;cursor:grab}
+.posedlg .hd{fill:#0000ff;pointer-events:none}
+.posedlg .hl,.posedlg .fc,.posedlg .ft{pointer-events:none}
+.posedlg .fc{fill:#fff}
+.posedlg .fh{cursor:grab}
+.posedlg input[type=range]{width:100%;margin:4px 0}
 .posedlg .pside{overflow:auto;padding:14px 16px;border-left:1px solid var(--line)}
-.posedlg .pside input{width:100%;height:36px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 10px;font:inherit;font-size:14px;box-sizing:border-box}
+.posedlg .pside #pName{width:100%;height:36px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 10px;font:inherit;font-size:14px;box-sizing:border-box}
 @media (max-width:760px){
   .posedlg{width:100vw;height:100vh;height:100dvh;border-radius:0;border:0}
   .posedlg .pbody{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
