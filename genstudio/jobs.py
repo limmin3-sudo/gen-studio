@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 import logging
 
-from . import router, workflows
+from . import poses, router, workflows
 from .comfy import ComfyClient, ComfyError, iter_images, output_text
 from .segments import DESCRIBE_PROMPT, FALLBACK_LABELS, SegmentStore, parse_labels
 from .config import Settings
@@ -264,6 +264,14 @@ class UpscaleRequest(BaseModel):
     refine: bool | None = Field(None, description="키운 뒤 디테일을 살짝 다시 그리기 (비우면 자동: 켬)")
     denoise: float | None = Field(None, ge=0.1, le=0.6)
     prompt: str = ""
+
+
+class PoseSaveRequest(BaseModel):
+    people: list = Field(..., description="사람마다 관절 18개 [x, y] (0~1) 또는 null, OpenPose 순서")
+    width: int = Field(768, ge=256, le=2048)
+    height: int = Field(1152, ge=256, le=2048)
+    name: str = Field("", max_length=60, description="자세 이름 (저장해 두고 다시 쓰기)")
+    parent_id: str | None = Field(None, description="어느 사진에서 시작했는지")
 
 
 class ReposeRequest(BaseModel):
@@ -1577,6 +1585,8 @@ class Engine:
             await self._run_ltx(job)
         elif job.kind == "frame":
             await self._run_video_frame(job)
+        elif job.kind == "readpose":
+            await self._run_read_pose(job)
         elif job.kind == "join":
             await self._run_join(job)
         elif job.kind == "repose":
@@ -1695,12 +1705,13 @@ class Engine:
             })
             job.result_ids.append(rec["id"])
 
-    async def _pose_map(self, job: Job, pose: dict) -> tuple[str, bytes]:
+    async def _pose_map(self, job: Job, pose: dict, need_joints: bool = False) -> tuple[str, bytes]:
         """The skeleton picture: as given, or made from the photo once and kept in the library for reuse."""
         rec = self.library.get(pose["image"])
         if pose["is_map"]:
             return rec["id"], self.library.path(rec["id"]).read_bytes()
-        done = next((r for r in self.library.list(limit=100000) if r.get("kind") == "pose" and r.get("parent_id") == rec["id"]), None)
+        done = next((r for r in self.library.list(limit=100000) if r.get("kind") == "pose" and r.get("parent_id") == rec["id"]
+                     and (r.get("keypoints") or not need_joints) and not r.get("pose_name")), None)
         if done:
             return done["id"], self.library.path(done["id"]).read_bytes()
         job.message = "포즈 읽는 중"
@@ -1711,11 +1722,55 @@ class Engine:
             im.save(buf, "PNG")
         name = await self.comfy.upload_image(buf.getvalue(), f"posesrc-{rec['id']}.png")
         files = self.registry.tools["pose_detect"]
-        outs = await self.comfy.run(workflows.pose_map(name, files[0].name, files[1].name))
-        data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
+        outputs = await self.comfy.run_outputs(workflows.pose_map(name, files[0].name, files[1].name))
+        imgs = [d for _n, d in iter_images(outputs)]
+        if not imgs:
+            raise ComfyError("포즈 그림이 저장되지 않았어요")
+        data = await self.comfy.view(imgs[0]["filename"], imgs[0].get("subfolder", ""))
+        joints = poses.from_sdpose(output_text(outputs))
         prec = self.library.add(data, {"kind": "pose", "source": "gen-studio", "parent_id": rec["id"],
-                                       "label": "포즈", "prompt": rec.get("prompt", "")})
+                                       "label": "포즈", "prompt": rec.get("prompt", ""),
+                                       **({"keypoints": joints} if joints else {})})
         return prec["id"], data
+
+    # ------------------------------------------------------------ skeleton editor
+    def save_pose(self, req: PoseSaveRequest) -> dict:
+        """A pose made by moving joints (editor or Codex): drawn as a pose map and kept in the library."""
+        people = poses.clean(req.people)
+        if req.parent_id and not self.library.get(req.parent_id):
+            raise KeyError(f"이미지를 찾을 수 없어요: {req.parent_id}")
+        png = poses.render(people, req.width, req.height)
+        name = req.name.strip()
+        return self.library.add(png, {"kind": "pose", "source": "gen-studio", "parent_id": req.parent_id,
+                                      "label": f"자세: {name}" if name else "뼈대 자세", "prompt": "",
+                                      "pose_name": name or None, "keypoints": {"people": people}})
+
+    def saved_poses(self) -> list[dict]:
+        return [r for r in self.library.list(limit=100000) if r.get("kind") == "pose" and r.get("pose_name")]
+
+    def submit_read_pose(self, image_id: str) -> Job:
+        """Read the joints of every person in a picture (to start the editor from a photo)."""
+        rec = self.library.get(image_id)
+        if not rec:
+            raise KeyError("이미지를 찾을 수 없어요")
+        self._need_still(image_id)
+        is_map = rec.get("kind") == "pose"
+        if is_map and not rec.get("keypoints"):
+            raise ValueError("이 포즈 그림에는 관절 정보가 없어요. 원래 사진에서 읽어 주세요.")
+        if not is_map and not self.registry.tool_ready("pose_detect", self.settings.models_dir):
+            raise ValueError("포즈 인식 모델(SDPose)이 없어요. 설정에서 모델을 받아 주세요.")
+        job = Job(id=uuid.uuid4().hex[:12], kind="readpose", request={"image_id": image_id},
+                  decision={"action": "뼈대 읽기", "model_name": "SDPose", "is_map": is_map})
+        return self._enqueue(job)
+
+    async def _run_read_pose(self, job: Job) -> None:
+        iid = job.request["image_id"]
+        pid, _ = await self._pose_map(job, {"image": iid, "is_map": job.decision["is_map"]}, need_joints=True)
+        prec = self.library.get(pid)
+        if not prec.get("keypoints"):
+            raise ComfyError("사진에서 사람 뼈대를 찾지 못했어요. 사람이 크게 나온 사진으로 해 보세요.")
+        job.result_ids.append(pid)
+        job.result = {"pose_id": pid, "keypoints": prec["keypoints"]}
 
     async def _draw_region(self, job: Job, model, png: bytes, box, text: str, base_prompt: str, negative: str,
                            seed: int, loras: list[dict], progress) -> bytes:

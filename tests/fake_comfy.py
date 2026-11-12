@@ -15,6 +15,12 @@ class FakeComfy:
     def __init__(self, fail_with: str | None = None):
         self.prompts: dict[str, dict] = {}
         self.uploads: dict[str, bytes] = {}
+        # what SDPose reports for a photo: one standing person on a 512x768 canvas (x, y, score per joint)
+        stand = [[.5, .14], [.5, .22], [.41, .23], [.38, .36], [.37, .48], [.59, .23], [.62, .36], [.63, .48],
+                 [.45, .5], [.45, .68], [.45, .87], [.55, .5], [.55, .68], [.55, .87], [.485, .125], [.515, .125],
+                 [.465, .135], [.535, .135]]
+        flat = [v for i, (x, y) in enumerate(stand) for v in (x * 512, y * 768, 0.1 if i == 17 else 0.9)]
+        self.pose_keypoints = [{"canvas_width": 512, "canvas_height": 768, "people": [{"pose_keypoints_2d": flat}]}]
         self.freed = 0
         self.views: list[dict] = []
         self.fail_with = fail_with
@@ -143,6 +149,9 @@ class FakeComfy:
                 if n["class_type"] == "SaveVideo":
                     outputs[nid] = {"images": [{"filename": f"{pid}_{nid}_0.mp4", "subfolder": "gen-studio", "type": "output"}],
                                     "animated": [True]}
+                if n["class_type"] == "PreviewAny" and graph[n["inputs"]["source"][0]]["class_type"] == "SDPoseKeypointExtractor":
+                    outputs[nid] = {"text": [json.dumps(self.pose_keypoints)]}
+                    continue
                 if n["class_type"] == "PreviewAny":
                     gen = graph[n["inputs"]["source"][0]]["inputs"]
                     reply = (self.describe_reply if "images.image1" in gen and "image 1" not in gen["prompt"]

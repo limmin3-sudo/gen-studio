@@ -169,6 +169,7 @@ def pose_map(image_name: str, sdpose_file: str, detector_file: str, prefix: str 
     draw = g.add("SDPoseDrawKeypoints", keypoints=kp, draw_body=True, draw_hands=True, draw_face=True, draw_feet=True,
                  stick_width=4, face_point_size=2, score_threshold=0.5, draw_head=True)
     g.add("SaveImage", filename_prefix=prefix, images=out(draw))
+    g.add("PreviewAny", source=kp)                    # the joints as JSON, for the skeleton editor
     return g.nodes
 
 

@@ -40,6 +40,9 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
 - change_pose(image_id, pose_id or prompt) moves the person into a new pose, same person and background.
+- Exact poses: read_pose(image_id) gives the joints; make_pose(people=[{"left_wrist": [0.7, 0.1], ...}],
+  start_pose_id=...) moves them (or starts from a preset) and returns a pose_id with a picture to check. Use it
+  with generate_image(pose_id=...) or change_pose(pose_id=...).
 - VIDEO: use create_video(prompt, image_id=None, seconds=5) — LTX-2.5 with sound, from text or an image — for
   every clip the user will look at. Write a detailed English shot description: subject, action beat by beat,
   camera, lighting, mood and the audio (dialogue in quotes, ambience, effects, music). It is slow (minutes to tens
@@ -341,6 +344,53 @@ def build_mcp(state: "State") -> MCPServer:
                     "next": "get_job_status(job_id) 후 segment_image(image_id)를 다시 호출하세요."}
         return [{"image_id": image_id, "segments": _seg_list(image_id)},
                 MCPImage(data=state.engine.segments.overview(image_id), format="jpeg")]
+
+    @mcp.tool(description=(
+        "Build a body pose by placing joints (the skeleton editor, for Codex). people = one dict per person: joint "
+        "name -> [x, y], 0..1 of the canvas (0,0 top-left), the person's right side is on the picture's left when "
+        "facing the camera. Joints: nose, neck, right_/left_ shoulder, elbow, wrist, hip, knee, ankle, right_/left_ "
+        "eye, ear. Give only the joints you want to move: the rest come from start_pose_id (the same person index) "
+        "or from preset ('stand', 'arms_up', 'walk', 'sit', 'hands_hips'; a person dict may also carry its own "
+        "\"preset\"). A joint set to null is hidden. Canvas width/height set the picture shape. Returns pose_id and "
+        "a picture of the skeleton to check; then generate_image(pose_id=...) or change_pose(pose_id=...)."))
+    async def make_pose(people: list[dict], width: int = 768, height: int = 1152, name: str = "",
+                        start_pose_id: str | None = None, preset: str = "stand"):
+        from . import poses
+        from .jobs import PoseSaveRequest
+        base = []
+        if start_pose_id:
+            rec = state.library.get(start_pose_id) or {}
+            base = (rec.get("keypoints") or {}).get("people") or []
+            if not base:
+                raise ValueError("start_pose_id에 관절 정보가 없어요. read_pose로 먼저 읽어 주세요.")
+        out = []
+        for i, person in enumerate(people or [{}]):
+            person = dict(person or {})
+            p = person.pop("preset", None)
+            start = poses.preset(p, width, height) if p else base[i] if i < len(base) else poses.preset(preset, width, height)
+            out.append(poses.from_named(person, start))
+        rec = state.engine.save_pose(PoseSaveRequest(people=out, width=width, height=height, name=name,
+                                                     parent_id=start_pose_id))
+        return [{"pose_id": rec["id"], "width": width, "height": height,
+                 "people": [poses.named(p) for p in rec["keypoints"]["people"]],
+                 "next": "generate_image(prompt, pose_id=...) 또는 change_pose(image_id, pose_id=...)"},
+                _preview(rec["id"])]
+
+    @mcp.tool(description=(
+        "Read the body joints of every person in a picture (or a saved pose). Returns pose_id and the joints as "
+        "name -> [x, y] (0..1), ready to adjust with make_pose(start_pose_id=pose_id, people=[{...moved joints}])."))
+    async def read_pose(image_id: str | None = None, image_path: str | None = None, wait_seconds: int = 60):
+        from . import poses
+        image_id = _one(image_id, image_path)
+        if not image_id:
+            raise ValueError("image_id나 image_path가 필요해요")
+        job = state.engine.submit_read_pose(image_id)
+        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
+        if job.status != "done":
+            return {"job_id": job.id, "status": job.status, "error": job.error}
+        rec = state.library.get(job.result["pose_id"])
+        return [{"pose_id": rec["id"], "width": rec["width"], "height": rec["height"],
+                 "people": [poses.named(p) for p in job.result["keypoints"]["people"]]}, _preview(rec["id"])]
 
     @mcp.tool(description=(
         "Change the pose of the person in an image, keeping the same person, clothing and background. Give a photo "

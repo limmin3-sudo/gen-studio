@@ -16,7 +16,7 @@ from .app_routes import set_remote  # noqa: F401  (used by the desktop tray)
 from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
-from .jobs import CharacterBuildRequest, CutoutRequest, JoinVideosRequest, LtxRequest, VideoFrameRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, JoinVideosRequest, LtxRequest, PoseSaveRequest, VideoFrameRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -285,6 +285,30 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
     async def ltx(body: dict):
         try:
             return engine.submit_ltx(LtxRequest(**body)).public()
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    @app.get("/api/poses")
+    async def list_poses():
+        """Saved poses and the starting shapes for the skeleton editor."""
+        from . import poses
+        return {"saved": [{"id": r["id"], "name": r.get("pose_name"), "width": r["width"], "height": r["height"],
+                           "keypoints": r.get("keypoints")} for r in engine.saved_poses()],
+                "presets": [{"id": k, "name": v[0], "joints": v[1]} for k, v in poses.PRESETS.items()],
+                "joints": poses.JOINTS, "joints_ko": poses.JOINT_KO, "limbs": poses.LIMBS, "colors": poses.COLORS,
+                "mirror": poses.MIRROR}
+
+    @app.post("/api/poses")
+    async def save_pose(body: dict):
+        try:
+            return engine.save_pose(PoseSaveRequest(**body))
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    @app.post("/api/images/{image_id}/read-pose")
+    async def read_pose(image_id: str):
+        try:
+            return engine.submit_read_pose(image_id).public()
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
 

@@ -368,3 +368,30 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stro
 .vpick button[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:1px}
 .vpick button i{position:absolute;left:3px;bottom:2px;font-style:normal;font-size:12px;color:#fff;text-shadow:0 1px 2px #000}
 .vpick [data-vup]{width:auto;padding:0 10px}
+
+/* skeleton editor */
+.posedlg{width:min(1180px,calc(100vw - 24px));height:min(860px,calc(100vh - 24px));max-width:none;max-height:none;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--fg);padding:0;box-sizing:border-box;overflow:hidden}
+.posedlg[open]{display:flex;flex-direction:column}
+.posedlg .phead{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
+.posedlg h3{margin:0;font-size:16px}
+.posedlg .px{width:32px;height:32px;border-radius:16px;background:var(--chip);font-size:18px}
+.posedlg .pbody{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px}
+.posedlg .pstagewrap{min-height:0;min-width:0;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg)}
+.posedlg .pstage{position:relative;flex:none;background:#000;border-radius:8px;overflow:hidden;touch-action:none}
+.posedlg .pstage img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;opacity:.45;pointer-events:none}
+.posedlg .pstage svg{position:absolute;inset:0;width:100%;height:100%;touch-action:none;user-select:none}
+.posedlg .pp{opacity:.5}
+.posedlg .pp.on{opacity:1}
+.posedlg .jt{stroke:#fff;stroke-width:0;pointer-events:none}
+.posedlg .pp.on .jt{stroke-width:2.5}
+.posedlg .hit{fill:transparent;cursor:grab}
+.posedlg line{cursor:move}
+.posedlg .miss{fill:transparent;stroke:#bbb;stroke-width:2;stroke-dasharray:4 3;cursor:grab}
+.posedlg .pside{overflow:auto;padding:14px 16px;border-left:1px solid var(--line)}
+.posedlg .pside input{width:100%;height:36px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:0 10px;font:inherit;font-size:14px;box-sizing:border-box}
+@media (max-width:760px){
+  .posedlg{width:100vw;height:100vh;height:100dvh;border-radius:0;border:0}
+  .posedlg .pbody{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
+  .posedlg .pstagewrap{padding:8px}
+  .posedlg .pside{border-left:0;border-top:1px solid var(--line);max-height:42vh}
+}

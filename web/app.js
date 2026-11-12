@@ -195,11 +195,19 @@ const Gen = (() => {
   const POSE_STR = [[0.6, '느슨하게'], [0.85, '보통'], [1.1, '정확하게']];
   function renderPose() {
     $('#addPose').hidden = !!pose;
+    $('#addPoseEd').textContent = pose ? '뼈대 고치기' : '+ 뼈대';
     $('#genPose').innerHTML = pose ? `<span class="ref"><img src="${thumbUrl(pose.id)}" alt=""><i>포즈</i><button type="button" data-unpose aria-label="포즈 빼기">×</button></span>
       <span class="posestr">${POSE_STR.map(([v, n]) => `<button type="button" data-pstr="${v}" aria-pressed="${v === pose.strength}">${n}</button>`).join('')}</span>` : '';
   }
   function setPose(id, strength) { pose = id ? {id, strength: strength ?? pose?.strength ?? 0.85} : null; store.set('gen.pose', pose); renderPose(); preview(); }
   $('#addPose').onclick = () => $('#poseIn').click();
+  $('#addPoseEd').onclick = async () => {
+    let rec = null;
+    if (pose) rec = await api.get(`/api/images/${pose.id}`).catch(() => null);
+    const isMap = rec && rec.kind === 'pose';
+    PoseEd.open({start: isMap ? rec.id : null, bg: rec && !isMap ? rec.id : null, autoRead: rec && !isMap,
+                 useLabel: '이 자세로 그리기', onUse: id => { setPose(id); toast('이 자세로 그려요. 무엇을 그릴지 적어 주세요.'); }});
+  };
   $('#poseIn').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     const fd = new FormData(); fd.append('file', f, f.name);
@@ -653,6 +661,219 @@ addEventListener('dragover', e => e.preventDefault());
 addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#drop').hidden = true; importFile(e.dataTransfer.files[0]); });
 addEventListener('paste', e => { const f = [...(e.clipboardData?.files || [])][0]; if (f && f.type.startsWith('image/')) importFile(f); });
 
+/* ========================================================= skeleton editor */
+/* Drag the joints of one or more people to make a pose. Saved as a pose map (/api/poses) that drawing and
+   "자세 바꾸기" use like a pose read from a photo. Joints are [x, y] in 0..1 of the canvas, OpenPose order. */
+const PoseEd = (() => {
+  let META = null;
+  const ASPECTS = [['2:3', 2, 3, '세로'], ['3:2', 3, 2, '가로'], ['1:1', 1, 1, '정사각'], ['9:16', 9, 16, '세로 길게'], ['16:9', 16, 9, '가로 길게']];
+  const canvasSize = (a, b) => { const k = Math.sqrt(1024 * 1024 / (a * b)); return [Math.max(256, Math.round(a * k / 64) * 64), Math.max(256, Math.round(b * k / 64) * 64)]; };
+  async function meta() { if (!META) META = await api.get('/api/poses'); return META; }
+  function fitPreset(id, W, H) {
+    const pts = (META.presets.find(p => p.id === id) || META.presets[0]).joints;
+    const s = Math.min(W / 2, H / 3);
+    return pts.map(([x, y]) => [+(0.5 + (x - 0.5) * 2 * s / W).toFixed(4), +(0.5 + (y - 0.5) * 3 * s / H).toFixed(4)]);
+  }
+  const clone = v => JSON.parse(JSON.stringify(v));
+
+  async function open(opts = {}) {
+    try { await meta(); } catch (e) { toast(e.message); return; }
+    let W = 832, H = 1216, people = [], sel = 0, showBg = true, history = [], aspect = '2:3', busyRead = false;
+    let bg = opts.bg || null, bgRec = null, name = '', savedAs = null;     // savedAs: {id, key} of the last save
+    if (bg) {
+      try { bgRec = await api.get(`/api/images/${bg}`); } catch { bg = null; }
+      if (bgRec) [W, H] = canvasSize(bgRec.width, bgRec.height);
+    }
+    const start = opts.start ? await api.get(`/api/images/${opts.start}`).catch(() => null) : null;
+    if (start?.keypoints?.people?.length) {
+      people = clone(start.keypoints.people);
+      if (!bg) { [W, H] = canvasSize(start.width, start.height); aspect = null; }
+    } else people = [fitPreset('stand', W, H)];
+
+    const d = document.createElement('dialog'); d.className = 'posedlg';
+    d.innerHTML = `<div class="phead"><h3>${esc(opts.title || '뼈대로 자세 만들기')}</h3><button type="button" class="px" data-close aria-label="닫기">×</button></div>
+      <div class="pbody"><div class="pstagewrap"><div class="pstage"><img alt="" hidden><svg xmlns="http://www.w3.org/2000/svg"></svg></div></div>
+      <div class="pside"></div></div>`;
+    document.body.appendChild(d);
+    const stage = d.querySelector('.pstage'), svg = d.querySelector('svg'), bgImg = d.querySelector('.pstage img'), side = d.querySelector('.pside');
+    if (bg) { bgImg.src = imgUrl(bg); }
+    const close = () => { d.close(); d.remove(); };
+    d.addEventListener('close', () => d.remove());
+
+    const snap = () => { history.push(clone({people, W, H, sel})); if (history.length > 50) history.shift(); };
+    function placeholder(person) {
+      const t = fitPreset('stand', W, H);
+      const ref = person[1] ? 1 : person.findIndex(j => j);
+      if (ref < 0) return t;
+      const dx = person[ref][0] - t[ref][0], dy = person[ref][1] - t[ref][1];
+      return t.map(([x, y]) => [x + dx, y + dy]);
+    }
+    const wrap = d.querySelector('.pstagewrap');
+    function fitStage() {                              // the canvas shape, as big as fits
+      const cs = getComputedStyle(wrap);
+      const aw = wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const ah = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      const k = Math.max(0.01, Math.min(aw / W, ah / H));
+      stage.style.width = Math.floor(W * k) + 'px'; stage.style.height = Math.floor(H * k) + 'px';
+    }
+    new ResizeObserver(fitStage).observe(wrap);
+    function paintStage() {
+      fitStage();
+      bgImg.hidden = !bg || !showBg;
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      const r = Math.max(W, H) / 95, sw = Math.max(W, H) / 110;
+      const rgb = c => `rgb(${c.join(',')})`;
+      let h = '';
+      people.forEach((p, pi) => {
+        const on = pi === sel;
+        h += `<g class="pp ${on ? 'on' : ''}" data-p="${pi}">`;
+        META.limbs.forEach(([a, b], i) => {
+          const A = p[a - 1], B = p[b - 1]; if (!A || !B) return;
+          h += `<line data-p="${pi}" data-limb="1" x1="${A[0] * W}" y1="${A[1] * H}" x2="${B[0] * W}" y2="${B[1] * H}" stroke="${rgb(META.colors[i % 18])}" stroke-width="${sw}" stroke-linecap="round"/>`;
+        });
+        if (on) placeholder(p).forEach(([x, y], j) => { if (!p[j]) h += `<circle class="miss" data-p="${pi}" data-j="${j}" cx="${x * W}" cy="${y * H}" r="${r}"><title>${esc(META.joints_ko[j])} (빠짐: 끌어서 넣기)</title></circle>`; });
+        p.forEach((pt, j) => {
+          if (!pt) return;
+          h += `<circle class="jt" data-p="${pi}" data-j="${j}" cx="${pt[0] * W}" cy="${pt[1] * H}" r="${r}" fill="${rgb(META.colors[j % 18])}"><title>${esc(META.joints_ko[j])}</title></circle>`;
+          h += `<circle class="hit" data-p="${pi}" data-j="${j}" cx="${pt[0] * W}" cy="${pt[1] * H}" r="${r * 2.4}"/>`;
+        });
+        h += '</g>';
+      });
+      svg.innerHTML = h;
+    }
+    function paintSide() {
+      const saved = META.saved || [];
+      side.innerHTML = `
+        <p class="note">관절(점)을 끌어서 자세를 만드세요. 선을 끌면 사람 전체가 움직여요. 빈 동그라미는 빠진 관절이에요. 끌어 놓으면 생겨요.</p>
+        ${bg ? `<div class="field"><div class="seg2"><button data-pact="read" ${busyRead ? 'disabled' : ''}>${busyRead ? '읽는 중…' : '사진에서 뼈대 읽기'}</button>
+          <button data-pact="bg" aria-pressed="${showBg}">사진 ${showBg ? '보임' : '숨김'}</button></div></div>` : ''}
+        <div class="field"><span>모양 (${people.length ? `${sel + 1}번 사람` : '사람 없음'})</span><div class="seg2">${META.presets.map(p => `<button data-preset="${p.id}">${esc(p.name)}</button>`).join('')}</div></div>
+        <div class="field"><span>사람</span><div class="seg2">
+          ${people.map((_, i) => `<button data-psel="${i}" aria-pressed="${i === sel}">${i + 1}번</button>`).join('')}
+          <button data-pact="add">+ 사람</button><button data-pact="del" ${people.length ? '' : 'disabled'}>지우기</button>
+          <button data-pact="flip" ${people.length ? '' : 'disabled'}>좌우 뒤집기</button><button data-pact="undo" ${history.length ? '' : 'disabled'}>되돌리기</button></div></div>
+        ${bg ? '' : `<div class="field"><span>비율</span><div class="seg2">${ASPECTS.map(([k, , , n]) => `<button data-asp="${k}" aria-pressed="${k === aspect}">${n} ${k}</button>`).join('')}</div></div>`}
+        ${saved.length ? `<div class="field"><span>저장된 자세</span><div class="vpick">${saved.map(s => `<button data-saved="${s.id}" title="${esc(s.name)}"><img src="${thumbUrl(s.id)}" alt="${esc(s.name)}"></button>`).join('')}</div></div>` : ''}
+        <div class="field"><input id="pName" placeholder="이름 붙여 저장 (예: 의자에 기대기)" value="${esc(name)}" maxlength="60"></div>
+        <div class="field"><div class="seg2"><button data-pact="use" aria-pressed="true" ${people.length ? '' : 'disabled'}>${esc(opts.useLabel || '이 자세로 그리기')}</button>
+          <button data-pact="save" ${people.length ? '' : 'disabled'}>저장만</button></div></div>`;
+    }
+    const paint = () => { paintStage(); paintSide(); };
+
+    function setAspect(k) {
+      const a = ASPECTS.find(x => x[0] === k); if (!a) return;
+      snap();
+      const [nW, nH] = canvasSize(a[1], a[2]); const s = Math.min(nW / W, nH / H);
+      people = people.map(p => p.map(j => j && [+(0.5 + (j[0] * W - W / 2) * s / nW).toFixed(4), +(0.5 + (j[1] * H - H / 2) * s / nH).toFixed(4)]));
+      W = nW; H = nH; aspect = k; paint();
+    }
+    function addPerson() {
+      snap();
+      const p = fitPreset('stand', W, H);
+      const mean = people.length ? people.flat().filter(Boolean).reduce((a, j) => a + j[0], 0) / people.flat().filter(Boolean).length : 0.5;
+      const dx = people.length ? (mean > 0.5 ? 0.27 : 0.73) - p[1][0] : 0;
+      const k = people.length ? 0.9 : 1, cx = p[1][0], cy = p[1][1];
+      people.push(p.map(([x, y]) => [+(cx + (x - cx) * k + dx).toFixed(4), +(cy + (y - cy) * k).toFixed(4)]));
+      sel = people.length - 1; paint();
+    }
+    async function readPhoto() {
+      if (!bg || busyRead) return;
+      busyRead = true; paintSide();
+      try {
+        const j = await pollJob((await api.post(`/api/images/${bg}/read-pose`)).id);
+        if (j.status !== 'done') throw new Error(j.error || '뼈대를 읽지 못했어요');
+        snap(); people = clone(j.result.keypoints.people); sel = 0;
+        toast(`${people.length}명의 뼈대를 읽었어요`);
+      } catch (e) { toast(e.message, 6000); }
+      busyRead = false; paint();
+    }
+    async function save(use) {
+      name = (d.querySelector('#pName')?.value || '').trim();
+      if (!use && !name) { d.querySelector('#pName').focus(); toast('저장할 이름을 적어 주세요'); return; }
+      const key = JSON.stringify([people, W, H, name]);
+      if (savedAs && savedAs.key === key) {                 // nothing changed since "저장만": use that one
+        if (use) { close(); await opts.onUse?.(savedAs.id); } else toast('이미 저장했어요');
+        return;
+      }
+      try {
+        const rec = await api.post('/api/poses', {people, width: W, height: H, name, parent_id: bg});
+        savedAs = {id: rec.id, key};
+        META = null; await meta().catch(() => {});
+        if (use) { close(); await opts.onUse?.(rec.id); } else { toast(`'${name}' 자세를 저장했어요`); paintSide(); }
+      } catch (e) { toast(e.message, 6000); }
+    }
+
+    /* dragging: a joint moves itself, a limb moves the whole person */
+    let drag = null;
+    const toCanvas = e => { const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; const q = pt.matrixTransform(svg.getScreenCTM().inverse()); return [q.x / W, q.y / H]; };
+    svg.addEventListener('pointerdown', e => {
+      const t = e.target.closest('[data-p]'); if (!t) return;
+      e.preventDefault();
+      const pi = +t.dataset.p; snap(); sel = pi;
+      const [x, y] = toCanvas(e);
+      if (t.dataset.j !== undefined) {
+        const j = +t.dataset.j;
+        if (!people[pi][j]) people[pi][j] = [x, y];
+        drag = {pi, j};
+      } else if (t.dataset.limb) drag = {pi, move: [x, y]};
+      svg.setPointerCapture(e.pointerId); paint();
+    });
+    svg.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const [x, y] = toCanvas(e);
+      const cl = v => +Math.min(1.2, Math.max(-0.2, v)).toFixed(4);
+      if (drag.j !== undefined) people[drag.pi][drag.j] = [cl(x), cl(y)];
+      else { const dx = x - drag.move[0], dy = y - drag.move[1]; drag.move = [x, y]; people[drag.pi] = people[drag.pi].map(j => j && [cl(j[0] + dx), cl(j[1] + dy)]); }
+      paintStage();
+    });
+    const end = () => { if (drag) { drag = null; paintSide(); } };
+    svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
+    svg.addEventListener('dblclick', e => {           // double-click a joint: hide it
+      const t = e.target.closest('[data-j]'); if (!t || !people[+t.dataset.p][+t.dataset.j]) return;
+      snap(); people[+t.dataset.p][+t.dataset.j] = null; paint();
+    });
+
+    d.addEventListener('click', async e => {
+      if (e.target.closest('[data-close]')) { close(); return; }
+      const pr = e.target.closest('[data-preset]');
+      if (pr) {
+        snap();
+        const np = fitPreset(pr.dataset.preset, W, H);
+        if (!people.length) { people.push(np); sel = 0; }
+        else {                                           // keep the person where they stand
+          const old = people[sel], ref = old[1] ? 1 : old.findIndex(j => j);
+          const dx = ref >= 0 ? old[ref][0] - np[ref][0] : 0;
+          people[sel] = np.map(([x, y]) => [+(x + dx).toFixed(4), y]);
+        }
+        paint(); return;
+      }
+      const ps = e.target.closest('[data-psel]'); if (ps) { sel = +ps.dataset.psel; paint(); return; }
+      const as = e.target.closest('[data-asp]'); if (as) { setAspect(as.dataset.asp); return; }
+      const sv = e.target.closest('[data-saved]');
+      if (sv) {
+        const s = META.saved.find(x => x.id === sv.dataset.saved); if (!s?.keypoints) return;
+        snap(); people = clone(s.keypoints.people); sel = 0; name = s.name || '';
+        if (!bg) { W = s.width; H = s.height; aspect = null; }
+        paint(); return;
+      }
+      const a = e.target.closest('[data-pact]'); if (!a) return;
+      const act = a.dataset.pact;
+      if (act === 'add') addPerson();
+      if (act === 'del' && people.length) { snap(); people.splice(sel, 1); sel = Math.max(0, sel - 1); paint(); }
+      if (act === 'flip' && people.length) { snap(); const m = META.mirror; people[sel] = people[sel].map((_, i) => { const j = people[sel][m[i]]; return j && [+(1 - j[0]).toFixed(4), j[1]]; }); paint(); }
+      if (act === 'undo' && history.length) { const h = history.pop(); people = h.people; W = h.W; H = h.H; sel = Math.min(h.sel, Math.max(0, people.length - 1)); paint(); }
+      if (act === 'bg') { showBg = !showBg; paint(); }
+      if (act === 'read') readPhoto();
+      if (act === 'use') save(true);
+      if (act === 'save') save(false);
+    });
+    d.addEventListener('input', e => { if (e.target.id === 'pName') name = e.target.value; });
+    paint(); d.showModal();
+    if (opts.autoRead && bg && !(start?.keypoints)) readPhoto();
+  }
+  return {open};
+})();
+
 /* =============================================================== editor */
 const Editor = (() => {
   const view = $('#editView'), img = $('#edImg'), cv = $('#mask'), cx = cv.getContext('2d');
@@ -868,7 +1089,7 @@ const Editor = (() => {
         + acc('repose', '자세 바꾸기', '같은 사람·옷·배경, 자세만', `
           <textarea class="acct" id="reposeText" rows="2" placeholder="어떤 자세로 바꿀지 적으세요. 예: 침대에 앉아 다리를 꼬고 있다">${esc(reposeText)}</textarea>
           <p class="note">원하는 자세가 담긴 사진을 넣어도 돼요. 글과 사진을 같이 써도 됩니다. 사진이 있으면 더 정확해요.</p>
-          <div class="field"><div class="seg2">${reposeId ? `<span class="ref"><img src="${thumbUrl(reposeId)}" alt=""><button type="button" data-act2="repose-clear" aria-label="자세 사진 빼기">×</button></span>` : ''}<button data-act2="repose-pick">${reposeId ? '다른 사진' : '자세 사진 넣기'}</button></div></div>
+          <div class="field"><div class="seg2">${reposeId ? `<span class="ref"><img src="${thumbUrl(reposeId)}" alt=""><button type="button" data-act2="repose-clear" aria-label="자세 사진 빼기">×</button></span>` : ''}<button data-act2="repose-pick">${reposeId ? '다른 사진' : '자세 사진 넣기'}</button><button data-act2="repose-bones">뼈대로 자세 잡기</button></div></div>
           <div class="field"><div class="seg2"><button id="doRepose" aria-pressed="true">자세 바꾸기</button></div></div>`)
         + acc('person', '이 인물·자세 다시 쓰기', '캐릭터 등록, 포즈, 참고 이미지', `
           <div class="field"><div class="inline"><input id="charName" placeholder="캐릭터 이름 (예: 플라이트 디렉터)"><button class="btn" id="saveChar">이 사진만 등록</button></div></div>
@@ -927,6 +1148,17 @@ const Editor = (() => {
     const a2 = e.target.closest('[data-act2]');
     if (a2 && a2.dataset.act2 === 'repose-pick') { $('#reposeIn').click(); return; }
     if (a2 && a2.dataset.act2 === 'repose-clear') { reposeId = null; paintPane(); return; }
+    if (a2 && a2.dataset.act2 === 'repose-bones' && rec) {
+      const target = rec;
+      PoseEd.open({bg: target.id, autoRead: true, title: '뼈대로 자세 잡기', useLabel: '이 자세로 바꾸기',
+        onUse: id => {
+          reposeId = id; accOpen.add('repose'); paintPane();
+          if (busy || !rec || rec.id !== target.id) { toast('자세를 넣었어요. "자세 바꾸기"를 누르세요.'); return; }
+          api.post(`/api/images/${target.id}/repose`, {pose: id, prompt: reposeText.trim()})
+            .then(j => runJob(j, `자세 바꾸기 · ${j.decision.model_name}`)).catch(err => toast(err.message, 6000));
+        }});
+      return;
+    }
     if (e.target.closest('#doRepose') && rec && !busy) {
       api.post(`/api/images/${rec.id}/repose`, {pose: reposeId, prompt: (reposeText || promptEl.value).trim()})
         .then(j => runJob(j, `자세 바꾸기 · ${j.decision.model_name}`)).catch(err => toast(err.message, 6000));
