@@ -195,24 +195,6 @@ tools:
       url: https://huggingface.co/Comfy-Org/frame_interpolation/resolve/main/frame_interpolation/film_net_fp16.safetensors
       size: 68882302
       sha256: f226e51375dc839d4b40e5c3d63da560dd1ea1c962364ec78f5adf2d05db05c0
-  # Codex 전용 고성능 영상: LTX-2.5 22B (영상 + 소리). ComfyUI 공식 "Image/Text to Video (LTX-2.5)" 템플릿과 같은 파일.
-  # Hugging Face에서 라이선스 동의 + 토큰이 필요해서 기본 다운로드에는 빠지고, 설정 화면에서 따로 받습니다.
-  video_ltx:
-    - name: ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors
-      dir: diffusion_models
-      url: https://huggingface.co/Lightricks/LTX-2.5/resolve/main/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors
-    - name: gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors
-      dir: text_encoders
-      url: https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors
-    - name: ltx-2.5-video-vae-bf16.safetensors
-      dir: vae
-      url: https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-bf16.safetensors
-    - name: ltx-2.5-audio-vae-bf16.safetensors
-      dir: vae
-      url: https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors
-    - name: ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors
-      dir: latent_upscale_models
-      url: https://huggingface.co/Lightricks/LTX-2.5/resolve/main/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors
 
-# 기본 설치·"모두 받기"에서 빠지는 도구 (설정 화면에서 따로 받음)
-optional_tools: [video_ltx]
+# Tools only fetched on request from the settings screen (none at the moment).
+optional_tools: []

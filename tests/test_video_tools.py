@@ -46,9 +46,9 @@ def test_retime_keeps_each_clip_length():
 
 def test_join_mixed_fps_both_orders():
     wan = {"name": "wan.mp4", "frames": 97, "fps": 32.0, "audio": False}
-    ltx = {"name": "ltx.mp4", "frames": 97, "fps": 24.0, "audio": True}
+    c24 = {"name": "c24.mp4", "frames": 97, "fps": 24.0, "audio": True}
     want = 97 / 32 + 97 / 24
-    for clips in ([wan, ltx], [ltx, wan]):
+    for clips in ([wan, c24], [c24, wan]):
         g, plan = workflows.join_videos(clips, audio=True)
         assert plan["fps"] == 32.0 and plan["frames"] == 97 + 129
         assert abs(plan["duration"] - want) <= 1 / 32                          # within one output frame
@@ -59,7 +59,7 @@ def test_join_mixed_fps_both_orders():
         parts = sorted(n["inputs"]["duration"] for n in g.values() if n["class_type"] == "EmptyAudio")
         assert parts == sorted([97 / 32, 129 / 32])
         trims = [n["inputs"]["duration"] for n in g.values() if n["class_type"] == "TrimAudioDuration"]
-        assert trims == [129 / 32]                                              # only the LTX clip has sound
+        assert trims == [129 / 32]                                              # only the 24 fps clip has sound
 
 
 def test_join_same_fps_uses_frames_as_they_are():

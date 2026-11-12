@@ -232,7 +232,7 @@ class Downloads:
                 for label, f, ok in plan(self.reg, self.s.models_dir) if not ok]
 
     def start(self, tools: list[str] | None = None) -> dict:
-        """Fetch what's missing; with `tools`, just those (e.g. the optional LTX video files)."""
+        """Fetch what's missing; with `tools`, just those (e.g. optional tools)."""
         if self.state.get("running"):
             return self.state
         self._tools = tools

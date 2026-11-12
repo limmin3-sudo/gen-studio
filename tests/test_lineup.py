@@ -29,7 +29,7 @@ def test_lineup_file():
     files += [f for name, fs in reg.tools.items() if name not in reg.optional_tools for f in fs]
     assert all(f.sha256 for f in files)
     # optional (gated) downloads: listed, but never part of the default download
-    assert reg.optional_tools == {"video_ltx"} and len(reg.tools["video_ltx"]) == 5
+    assert not reg.optional_tools and "video_ltx" not in reg.tools          # LTX was removed (2026-11-12)
     assert not any("lightx2v" in f.name for f in reg.tools["video_i2v"])
     assert FileSpec("a", "b", size=1000, sha256="x", civitai_version=1).size_ok(1000 + 3000)
     assert not FileSpec("a", "b", size=1000, sha256="x", url="u").size_ok(1001)

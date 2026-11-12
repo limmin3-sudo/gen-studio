@@ -47,21 +47,15 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   start_pose_id=...) moves them (or starts from a preset) and returns a pose_id with a picture to check. Use it
   with generate_image(pose_id=...) or change_pose(pose_id=...). make_pose also takes hand shapes (fist, peace ...),
   face/feet, copy_side and a camera angle (camera_yaw / camera_pitch) for side or top views.
+- VIDEO: image_to_video(image_id, prompt) — Wan 2.2 14B, 720p, 16 fps smoothed to 32 fps, no sound, a few
+  minutes. Write the motion in English. Keyframes: end_image_id (last shot) and mid_image_id (middle shot; needs an
+  end shot). Make the stills first (generate_image / edit_image / change_pose), then animate between them. Also
+  adjustable: width/height, seconds (5 is what the model knows best; with a middle shot up to 10), steps,
+  smoothing x2-x4, negative, seed. Start it, tell the user, and poll get_job_status.
 - Pose-driven video: pose_video(image_id, poses=[{pose_id, at}], prompt) turns each pose into a still of the
-  same person, then animates through them (LTX keyframes, or Wan start/middle/end).
-- VIDEO: use create_video(prompt, image_id=None, seconds=5) — LTX-2.5 with sound, from text or an image — for
-  every clip the user will look at. Write a detailed English shot description: subject, action beat by beat,
-  camera, lighting, mood and the audio (dialogue in quotes, ambience, effects, music). It is slow (minutes to tens
-  of minutes): start it, tell the user, and poll get_job_status. If it says the LTX model is missing, tell the user
-  to download it in Gen Studio → 설정 → "Codex 전용 고성능 영상" (needs a Hugging Face token) and offer
-  image_to_video as a draft meanwhile.
-- Keyframes: create_video(image_id=start, mid_image_id=..., end_image_id=..., keyframes=[{"image_id":..,"at":3.5}])
-  pins pictures to moments; make the stills first (generate_image / edit_image / change_pose), then animate between
-  them. Everything is adjustable: width/height, seconds (2-20), fps, image_strength, audio on/off, negative, seed.
+  same person, then animates through them (start/middle/end).
 - Longer films: get_video_frame(video_id, "last") gives the last frame as an image, start the next clip from it,
-  then join_videos([clip1, clip2, ...]) makes one file (sound included).
-- image_to_video(image_id, prompt) is a quicker Wan 2.2 clip (no sound); it also takes end_image_id/mid_image_id,
-  size, steps and smoothing (frame interpolation x2-x4).
+  then join_videos([clip1, clip2, ...]) makes one file.
 - upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
 - remove_background(image_id) keeps the people/objects and makes the rest transparent (or white, #hex ...);
@@ -441,19 +435,16 @@ def build_mcp(state: "State") -> MCPServer:
         "Video where the person moves through poses you made: each pose (pose_id from make_pose / read_pose / "
         "the editor, or a photo to copy the pose of) is first turned into a still of the SAME person and scene "
         "(change_pose), then the stills become keyframes of one clip. poses = [{pose_id, at: seconds}] (at -1 = "
-        "the last frame). keep_start: the original image is the first frame. engine 'ltx' (LTX-2.5, sound, any "
-        "number of poses, up to 20 s) or 'wan' (Wan 2.2, start/middle/end only). Other knobs as in create_video "
-        "(seconds, quality, fps, audio, image_strength, negative, seed) / image_to_video (smooth). Slow: poll "
-        "get_job_status. The result's image_ids are the clip first, then each pose still."))
-    async def pose_video(image_id: str, poses: list[dict], prompt: str = "", engine: str = "ltx",
-                         keep_start: bool = True, seconds: int = 5, quality: str = "720p", fps: int = 24,
-                         audio: bool = True, image_strength: float = 0.7, smooth: bool = True, negative: str = "",
+        "the last frame). keep_start: the original image is the first frame. Wan 2.2: start, middle and end, so "
+        "up to 2 poses with keep_start (3 without). seconds 2-10, quality 720p/480p, smooth, negative, seed. Slow: "
+        "poll get_job_status. The result's image_ids are the clip first, then each pose still."))
+    async def pose_video(image_id: str, poses: list[dict], prompt: str = "", keep_start: bool = True,
+                         seconds: int = 5, quality: str = "720p", smooth: bool = True, negative: str = "",
                          seed: int = -1, wait_seconds: int = 30):
         from .jobs import PoseVideoRequest
         job = state.engine.submit_pose_video(PoseVideoRequest(
-            image_id=image_id, poses=poses, prompt=prompt, engine="wan" if engine == "wan" else "ltx",
-            keep_start=keep_start, seconds=seconds, quality=quality if quality in ("480p", "540p", "720p") else "720p",
-            fps=fps, audio=audio, image_strength=image_strength, smooth=smooth, negative=negative, seed=seed))
+            image_id=image_id, poses=poses, prompt=prompt, keep_start=keep_start, seconds=max(2, min(int(seconds), 10)),
+            quality="480p" if str(quality).startswith("480") else "720p", smooth=smooth, negative=negative, seed=seed))
         job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
         out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
                "decision": job.decision}
@@ -501,53 +492,8 @@ def build_mcp(state: "State") -> MCPServer:
         return await _finish(job, wait_seconds, include_image)
 
     @mcp.tool(description=(
-        "High-quality video WITH SOUND (LTX-2.5 22B) from a text prompt, or from an image (image_id / image_path) "
-        "as the first shot. Slow (several minutes to tens of minutes on the home GPU) but much better than "
-        "image_to_video. Write the prompt like a shot description in English: subject and look, action beat by beat, "
-        "camera (angle, lens, movement), lighting, mood, and the sound (dialogue in quotes with who says it, "
-        "ambience, effects, music). "
-        "Keyframes: image_id = first shot, end_image_id = last shot, mid_image_id = the middle, keyframes = "
-        "[{image_id, at: seconds, strength?}] for any other moments (each id may instead be a file path in *_path "
-        "/ keyframes[].path). With keyframes it runs ComfyUI's First & Last Frame recipe (one pass, full size). "
-        "If a person shows up twice or two poses blend between keyframes, leave more time between them, describe "
-        "the movement between them in the prompt, or lower that keyframe's strength (0.4-0.5). "
-        "Memory: the home GPU (16GB) fits about 45,000 video tokens = width/32 x height/32 x (frames/8): e.g. "
-        "1920x1088 at 24 fps up to ~7 s, at 12 fps ~14 s; 1280x704 at 24 fps ~16 s. Bigger requests are refused "
-        "with what would fit (allow_risky=true tries anyway; ComfyUI may crash and is restarted automatically). "
-        "Knobs: seconds 2-20, quality 540p/720p or width/height directly "
-        "(multiples of 64), orientation auto/landscape/portrait/square, fps 12-50 (24 default), image_strength "
-        "0.1-1 (how strictly the pictures are followed, 0.7 default), audio true/false, negative, seed. "
-        "Returns a job_id: poll get_job_status; the finished mp4 path is in the result (export_image copies it)."))
-    async def create_video(prompt: str, image_id: str | None = None, image_path: str | None = None, seconds: int = 5,
-                           quality: str = "720p", orientation: str = "auto", negative: str = "", seed: int = -1,
-                           end_image_id: str | None = None, end_image_path: str | None = None,
-                           mid_image_id: str | None = None, mid_image_path: str | None = None,
-                           keyframes: list[dict] | None = None, width: int | None = None, height: int | None = None,
-                           fps: int = 24, image_strength: float = 0.7, audio: bool = True, allow_risky: bool = False,
-                           wait_seconds: int = 30):
-        from .jobs import LtxRequest
-        image_id = _one(image_id, image_path)
-        keys = [{"image_id": _one(k.get("image_id"), k.get("path")), "at": float(k.get("at", 0)),
-                 "strength": k.get("strength")} for k in keyframes or []]
-        job = state.engine.submit_ltx(LtxRequest(
-            prompt=prompt, image_id=image_id, end_image_id=_one(end_image_id, end_image_path),
-            mid_image_id=_one(mid_image_id, mid_image_path), keyframes=keys, seconds=max(2, min(int(seconds), 20)),
-            quality="540p" if str(quality).startswith("540") else "720p",
-            orientation=orientation if orientation in ("auto", "landscape", "portrait", "square") else "auto",
-            width=width, height=height, fps=fps, image_strength=image_strength, audio=audio,
-            negative=negative, seed=seed, allow_risky=allow_risky))
-        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
-        out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
-               "decision": job.decision}
-        if job.status == "done":
-            out["video"] = _info(job.result_ids[0])
-        else:
-            out["next"] = "오래 걸려요. get_job_status(job_id, wait_seconds=60)로 가끔 확인하세요."
-        return out
-
-    @mcp.tool(description=(
-        "Quicker video from an image (Wan 2.2 14B DaSiWa, 16 fps, no sound). Lower quality than create_video: use "
-        "it for a fast preview or when the user asks for this model. prompt: how things move, in English (empty = "
+        "Video from an image (Wan 2.2 14B DaSiWa, 16 fps, no sound, a few minutes). prompt: how things move, in "
+        "English (empty = "
         "natural subtle motion). end_image_id / end_image_path = last shot; mid_image_id / mid_image_path = middle "
         "shot (needs an end shot; two halves are made and joined). seconds 2-10 (5 is what the model knows best; "
         "with a middle shot up to 10 stays natural), quality 720p (default) or 480p, or width/height directly "
@@ -589,7 +535,7 @@ def build_mcp(state: "State") -> MCPServer:
 
     @mcp.tool(description=(
         "Join clips one after another into one mp4 (2-20 video ids, in order). Clips may have different frame "
-        "rates (e.g. Wan 32 fps + LTX 24 fps): the result runs at the highest one and every clip keeps its own "
+        "rates (e.g. smoothed 32 fps + plain 16 fps): the result runs at the highest one and every clip keeps its own "
         "length and speed. Later clips are scaled to the first one's size. audio: keep the sound (default: when "
         "any clip has sound; silent clips get silence so sound stays in sync)."))
     async def join_videos(video_ids: list[str], audio: bool | None = None, wait_seconds: int = 60):

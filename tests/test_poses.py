@@ -171,29 +171,21 @@ def test_codex_make_and_read_pose(real, fake):
 
 
 def test_pose_video_for_codex(real, fake):
-    """Poses -> stills of the same person (Qwen 자세 바꾸기) -> one clip through them."""
-    assert "video_ltx" in real.app.state.gs.engine.registry.tools      # no models folder in tests: counts as there
+    """Poses -> stills of the same person (Qwen 자세 바꾸기) -> one Wan clip through them (start/middle/end)."""
     photo = real.post("/api/import", files={"file": ("p.png", _png(720, 1280), "image/png")}).json()["id"]
     mk = lambda **kw: json.loads(rpc(real, "tools/call", {"name": "make_pose", "arguments": kw})["content"][0]["text"])["pose_id"]
     up, sit = mk(people=[{"preset": "arms_up"}], width=720, height=1280), mk(people=[{"preset": "sit"}], width=720, height=1280)
     res = rpc(real, "tools/call", {"name": "pose_video", "arguments": {
         "image_id": photo, "poses": [{"pose_id": up, "at": 2}, {"pose_id": sit, "at": -1}], "prompt": "she dances",
-        "seconds": 4, "wait_seconds": 30}})
+        "seconds": 5, "wait_seconds": 30}})
     out = json.loads(res["content"][0]["text"])
     assert out["status"] == "done", out
     assert out["video"]["media"] == "video" and len(out["pose_stills"]) == 2
     g = list(fake.prompts.values())[-1]
-    guides = [n["inputs"]["frame_idx"] for n in g.values() if n["class_type"] == "LTXVAddGuide"]
-    assert guides == [0, 48, -1]                                  # original first, arms up at 2 s, sitting at the end
+    assert sum(n["class_type"] == "WanFirstLastFrameToVideo" for n in g.values()) == 2      # photo -> arms up -> sitting
     reposes = [p for p in fake.prompts.values() if any(n["class_type"] == "TextEncodeQwenImage21" for n in p.values())]
     assert len(reposes) >= 2
-    # Wan: start / middle / end only
-    j = wait_job(real, real.post("/api/pose-video", json={"image_id": photo, "engine": "wan", "seconds": 5,
-                                                          "poses": [{"pose_id": up, "at": 2}, {"pose_id": sit, "at": -1}]}).json()["id"])
-    assert j["status"] == "done", j["error"]
-    g = list(fake.prompts.values())[-1]
-    assert sum(n["class_type"] == "WanFirstLastFrameToVideo" for n in g.values()) == 2
-    too_many = real.post("/api/pose-video", json={"image_id": photo, "engine": "wan",
+    too_many = real.post("/api/pose-video", json={"image_id": photo,
                                                   "poses": [{"pose_id": up, "at": 1}, {"pose_id": sit, "at": 2},
                                                             {"pose_id": up, "at": -1}]})
     assert too_many.status_code == 400

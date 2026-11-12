@@ -6,7 +6,6 @@ import re
 import base64
 import io
 import json
-import os
 import random
 import time
 import uuid
@@ -145,12 +144,6 @@ class EditRequest(BaseModel):
     translate: bool | None = None
 
 
-class Keyframe(BaseModel):
-    image_id: str = Field(..., description="이 순간에 나올 장면 (이미지 id)")
-    at: float = Field(..., description="몇 초에 (0 = 처음, -1 = 마지막)")
-    strength: float | None = Field(None, ge=0.1, le=1.0, description="이 장면만 따르는 정도 (비우면 image_strength)")
-
-
 class VideoRequest(BaseModel):
     image_id: str = Field(..., description="첫 장면")
     prompt: str = Field("", description="어떻게 움직일지 (비우면 자연스러운 움직임)")
@@ -184,37 +177,9 @@ def video_files(specs) -> list[str]:
     return out + [lh, ll] if lh and ll else out
 
 
-def ltx_files(specs) -> list[str]:
-    """[transformer, text encoder, video vae, audio vae, upscaler] from the tool's file list, whatever its order."""
-    def pick(cond):
-        return next((f.name for f in specs if cond(f)), None)
-    return [pick(lambda f: f.dir == "diffusion_models"), pick(lambda f: f.dir == "text_encoders"),
-            pick(lambda f: f.dir == "vae" and "audio" not in f.name), pick(lambda f: f.dir == "vae" and "audio" in f.name),
-            pick(lambda f: f.dir == "latent_upscale_models")]
-
-
 def video_size(w: int, h: int, quality: str) -> tuple[int, int]:
     k = (VIDEO_AREA[quality] / (w * h)) ** 0.5
     return max(256, round(w * k / 16) * 16), max(256, round(h * k / 16) * 16)
-
-
-class LtxRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, description="장면·움직임·카메라·소리(대사, 효과음, 음악)까지 자세히")
-    image_id: str | None = Field(None, description="첫 장면으로 쓸 이미지 (없으면 글만으로 만듦)")
-    end_image_id: str | None = Field(None, description="마지막 장면")
-    mid_image_id: str | None = Field(None, description="가운데 장면")
-    keyframes: list[Keyframe] = Field(default_factory=list, description="원하는 초에 원하는 장면 (여러 개)")
-    seconds: int = Field(5, ge=2, le=20, description="10초 넘으면 오래 걸리고 메모리가 빠듯함")
-    quality: Literal["540p", "720p"] = "720p"
-    orientation: Literal["auto", "landscape", "portrait", "square"] = "auto"
-    width: int | None = Field(None, ge=256, le=1920, description="직접 크기 (64의 배수로 맞춤). 하나만 주면 비율 유지")
-    height: int | None = Field(None, ge=256, le=1920)
-    fps: int = Field(24, ge=12, le=50)
-    image_strength: float = Field(0.7, ge=0.1, le=1.0, description="장면 사진을 얼마나 그대로 따를지")
-    audio: bool = Field(True, description="소리(대사·효과음·음악)까지 만들기")
-    negative: str = ""
-    seed: int = -1
-    allow_risky: bool = Field(False, description="그래픽 메모리 한도를 넘는 크기·길이도 그냥 시도 (ComfyUI가 꺼질 수 있음)")
 
 
 class VideoFrameRequest(BaseModel):
@@ -224,12 +189,7 @@ class VideoFrameRequest(BaseModel):
 
 class JoinVideosRequest(BaseModel):
     video_ids: list[str] = Field(..., min_length=2, max_length=20, description="이어 붙일 영상 순서대로")
-    audio: bool | None = Field(None, description="소리 이어 붙이기 (비우면 모든 영상에 소리가 있을 때만)")
-
-
-LTX_AREA = {"540p": 960 * 544, "720p": 1280 * 720}
-LTX_SHAPES = {"landscape": (16, 9), "portrait": (9, 16), "square": (1, 1)}
-LTX_FPS = 24
+    audio: bool | None = Field(None, description="소리 이어 붙이기 (비우면 소리 있는 영상이 하나라도 있을 때)")
 
 
 def custom_size(w: int, h: int, width: int | None, height: int | None, step: int) -> tuple[int, int]:
@@ -239,42 +199,6 @@ def custom_size(w: int, h: int, width: int | None, height: int | None, step: int
     elif height and not width:
         width = height * w / h
     return max(256, round(width / step) * step), max(256, round(height / step) * step)
-
-
-def ltx_guides(req: "LtxRequest") -> list[tuple[str, float, float]]:
-    """Every pinned picture as (image id, second, strength), in time order; -1 = the last frame."""
-    st = req.image_strength
-    g = [(req.image_id, 0.0, st)] if req.image_id else []
-    if req.mid_image_id:
-        g.append((req.mid_image_id, req.seconds / 2, st))
-    g += [(k.image_id, float(k.at), k.strength if k.strength is not None else st) for k in req.keyframes]
-    if req.end_image_id:
-        g.append((req.end_image_id, -1.0, st))
-    return sorted(g, key=lambda x: float("inf") if x[1] < 0 or x[1] >= req.seconds else x[1])
-
-
-# What fits in 16GB at once, in LTX video tokens (32x32 pixels x 8 frames). Measured on the home PC
-# (RTX 4080 SUPER 16GB, 32GB RAM): 1920x1088 6 s 24 fps = 38,760 ran; 10 s = 63,240 ran out of memory.
-LTX_TOKEN_BUDGET = int(os.environ.get("GS_LTX_TOKEN_BUDGET", "45000"))
-
-
-def ltx_tokens(w: int, h: int, frames: int) -> int:
-    return (w // 32) * (h // 32) * ((frames - 1) // 8 + 1)
-
-
-def ltx_max_seconds(w: int, h: int, fps: int) -> float:
-    latent = LTX_TOKEN_BUDGET // max(1, (w // 32) * (h // 32))
-    return max(0.0, ((latent - 1) * 8) / fps)
-
-
-def ltx_frame(at: float, seconds: int, fps: int) -> int:
-    return -1 if at < 0 or at >= seconds else round(at * fps)
-
-
-def ltx_size(w: int, h: int, quality: str) -> tuple[int, int]:
-    """Same picture shape, about 0.5MP (540p) or 0.9MP (720p); multiples of 64 so the half-size first pass fits."""
-    k = (LTX_AREA[quality] / (w * h)) ** 0.5
-    return max(256, round(w * k / 64) * 64), max(256, round(h * k / 64) * 64)
 
 
 class UpscaleRequest(BaseModel):
@@ -302,16 +226,12 @@ class PoseKey(BaseModel):
 
 class PoseVideoRequest(BaseModel):
     image_id: str = Field(..., description="움직일 사람·장면 사진")
-    poses: list[PoseKey] = Field(..., min_length=1, max_length=6)
-    prompt: str = Field("", description="장면·움직임·카메라·소리")
-    engine: Literal["ltx", "wan"] = "ltx"
+    poses: list[PoseKey] = Field(..., min_length=1, max_length=3, description="처음·가운데·끝까지 (Wan 2.2)")
+    prompt: str = Field("", description="장면·움직임")
     keep_start: bool = Field(True, description="원래 사진을 첫 장면으로 (0초에 자세가 있으면 그 자세가 첫 장면)")
-    seconds: int = Field(5, ge=2, le=20)
-    quality: Literal["480p", "540p", "720p"] = "720p"
-    fps: int = Field(24, ge=12, le=50, description="LTX만")
-    audio: bool = Field(True, description="LTX만")
-    image_strength: float = Field(0.7, ge=0.1, le=1.0, description="LTX만")
-    smooth: bool = Field(True, description="Wan만: 프레임 보간")
+    seconds: int = Field(5, ge=2, le=10)
+    quality: Literal["480p", "720p"] = "720p"
+    smooth: bool = Field(True, description="프레임 보간")
     negative: str = ""
     seed: int = -1
 
@@ -926,45 +846,6 @@ class Engine:
         if rec and rec.get("media") == "video":
             raise ValueError("영상은 편집할 수 없어요. 영상을 만든 원본 이미지에서 작업해 주세요.")
 
-    # ------------------------------------------------------------ LTX-2.5: Codex's high-quality video with sound
-    def submit_ltx(self, req: LtxRequest) -> Job:
-        return self._enqueue(self._ltx_job(req))
-
-    def _ltx_job(self, req: LtxRequest) -> Job:
-        if not self.registry.tool_ready("video_ltx", self.settings.models_dir):
-            raise ValueError("LTX-2.5 영상 모델이 없어요. Gen Studio 설정 → 'Codex 전용 고성능 영상'에서 받아 주세요.")
-        guides = ltx_guides(req)
-        for iid, _, _ in guides:
-            if not self.library.get(iid):
-                raise KeyError(f"이미지를 찾을 수 없어요: {iid}")
-            self._need_still(iid)
-        first = self.library.get(guides[0][0]) if guides else None
-        if req.orientation != "auto" or not first:
-            w, h = LTX_SHAPES["landscape" if req.orientation == "auto" else req.orientation]
-        else:
-            w, h = first["width"], first["height"]
-        w, h = custom_size(w, h, req.width, req.height, 64) if req.width or req.height else ltx_size(w, h, req.quality)
-        frames = req.seconds * req.fps + 1
-        tokens = ltx_tokens(w, h, frames)
-        if tokens > LTX_TOKEN_BUDGET and not req.allow_risky:
-            alt = [f"{req.fps}fps로 {ltx_max_seconds(w, h, req.fps):.0f}초까지"]
-            if req.fps > 12:
-                alt.append(f"12fps로 {min(20, ltx_max_seconds(w, h, 12)):.0f}초까지")
-            a7 = ltx_size(w, h, "720p")
-            alt.append(f"{a7[0]}×{a7[1]}로 {min(20, ltx_max_seconds(*a7, req.fps)):.0f}초까지")
-            raise ValueError(f"{w}×{h} {req.seconds}초 {req.fps}fps는 16GB 그래픽 메모리에 너무 커요 "
-                             f"(ComfyUI가 꺼질 수 있어요). 가능한 것: {', '.join(alt)}. "
-                             "그래도 해 보려면 allow_risky=true.")
-        mode = "keyframes" if any(at != 0 for _, at, _ in guides) else "image" if guides else "text"
-        job = Job(id=uuid.uuid4().hex[:12], kind="ltx", request=req.model_dump(),
-                  decision={"action": f"LTX 영상 {req.seconds}초" + (f" · 장면 {len(guides)}개" if mode == "keyframes" else ""),
-                            "model_name": "LTX-2.5 22B (영상+소리)" if req.audio else "LTX-2.5 22B",
-                            "family": "ltx", "width": w, "height": h, "frames": frames, "fps": req.fps, "mode": mode,
-                            "tokens": tokens,
-                            "guides": [{"image_id": i, "frame": ltx_frame(at, req.seconds, req.fps), "strength": st}
-                                       for i, at, st in guides]})
-        return job
-
     async def _upload_fit(self, iid: str, w: int, h: int, tag: str) -> tuple[str, bytes]:
         """The picture cropped to cover w×h, uploaded to ComfyUI. Returns (name, png)."""
         path = self.library.path(iid)
@@ -980,52 +861,6 @@ class Engine:
             im.save(buf, "PNG")
         png = buf.getvalue()
         return await self.comfy.upload_image(png, f"{tag}-{iid}-{w}x{h}.png"), png
-
-    async def _run_ltx(self, job: Job) -> None:
-        req = LtxRequest(**job.request)
-        d = job.decision
-        w, h = d["width"], d["height"]
-        fps = d.get("fps") or LTX_FPS
-        guides = ltx_guides(req)
-        names = [(await self._upload_fit(iid, w, h, "ltx-key"))[0] for iid, _, _ in guides]
-        src = self.library.get(req.image_id) if req.image_id else None
-        await self.comfy.free()                                   # a 22B model and a 12B text encoder: start clean
-        self._last_family = None
-        job.message = "LTX 영상 만드는 중 (수 분~수십 분)"
-        files = dict(zip(("transformer", "text_encoder", "video_vae", "audio_vae", "upscaler"),
-                         ltx_files(self.registry.tools["video_ltx"])))
-        seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
-        if d.get("mode") == "keyframes":
-            graph = workflows.ltx_keyframes(req.prompt.strip(), files, w, h, req.seconds, seed,
-                                            [(n, g["frame"], g.get("strength", req.image_strength))
-                                             for n, g in zip(names, d["guides"])],
-                                            negative=req.negative, fps=fps, strength=req.image_strength, audio=req.audio)
-        else:
-            graph = workflows.ltx_video(req.prompt.strip(), files, w, h, req.seconds, seed,
-                                        image_name=names[0] if names else None, negative=req.negative, fps=fps,
-                                        strength=req.image_strength, audio=req.audio)
-        outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=4 * 3600)
-        clip = next((o for o in outs if str(o.get("filename", "")).lower().endswith((".mp4", ".webm", ".mov"))), None)
-        poster_item = next((o for o in outs if str(o.get("filename", "")).lower().endswith(".png")), None)
-        if not clip:
-            raise ComfyError("영상 파일이 저장되지 않았어요")
-        data = await self.comfy.view(clip["filename"], clip.get("subfolder", ""))
-        poster = await self.comfy.view(poster_item["filename"], poster_item.get("subfolder", "")) if poster_item else None
-        if poster is None:
-            buf = io.BytesIO()
-            Image.new("RGB", (w, h), (20, 20, 20)).save(buf, "PNG")
-            poster = buf.getvalue()
-        await self.comfy.free()
-        rec = self.library.add_video(data, poster, {
-            "kind": "video", "source": "gen-studio", "parent_id": src["id"] if src else None,
-            "prompt": req.prompt, "edit_prompt": req.prompt, "final_prompt": req.prompt, "model_id": None,
-            "family": "ltx", "seed": seed, "label": f"LTX 영상 {req.seconds}초", "fps": fps,
-            "frames": d["frames"], "duration": round((d["frames"] - 1) / fps, 2), "audio": req.audio,
-            "keyframes": d.get("guides") or [],
-            "edit": {"mode": "ltx", "seconds": req.seconds, "quality": req.quality, "orientation": req.orientation,
-                     "negative": req.negative, "request": {**req.model_dump(), "seed": -1}},
-        }, ext="." + clip["filename"].rsplit(".", 1)[-1].lower())
-        job.result_ids.append(rec["id"])
 
     def submit_video(self, req: VideoRequest) -> Job:
         return self._enqueue(self._video_job(req))
@@ -1115,19 +950,16 @@ class Engine:
                 raise KeyError(f"자세를 찾을 수 없어요: {k.pose_id}")
             self._need_still(k.pose_id)
         self._reference_model(None)                       # Qwen redraws the person in each pose
-        tool = "video_ltx" if req.engine == "ltx" else "video_i2v"
-        if not self.registry.tool_ready(tool, self.settings.models_dir):
-            raise ValueError("LTX-2.5 영상 모델이 없어요. 설정에서 받아 주세요." if req.engine == "ltx"
-                             else "영상 모델(Wan 2.2 I2V)이 없어요. 설정에서 받아 주세요.")
+        if not self.registry.tool_ready("video_i2v", self.settings.models_dir):
+            raise ValueError("영상 모델(Wan 2.2 I2V)이 없어요. 설정에서 받아 주세요.")
         keys = sorted(req.poses, key=lambda k: float("inf") if k.at < 0 or k.at >= req.seconds else k.at)
         starts = req.keep_start and not any(k.at == 0 for k in keys)
-        if req.engine == "wan" and len(keys) > (2 if starts else 3):
-            raise ValueError("Wan은 처음·가운데·끝 장면까지만 돼요. 자세를 줄이거나 engine=ltx로 해 주세요.")
-        if not starts and keys[0].at != 0 and req.engine == "wan":
-            raise ValueError("Wan은 첫 장면이 필요해요: keep_start=true로 두거나 0초 자세를 넣어 주세요.")
+        if len(keys) > (2 if starts else 3):
+            raise ValueError("처음·가운데·끝 장면까지만 돼요: 원래 사진이 첫 장면이면 자세는 2개까지예요.")
+        if not starts and keys[0].at != 0:
+            raise ValueError("첫 장면이 필요해요: keep_start=true로 두거나 0초 자세를 넣어 주세요.")
         job = Job(id=uuid.uuid4().hex[:12], kind="posevideo", request=req.model_dump(),
-                  decision={"action": f"자세 영상 · 자세 {len(keys)}개", "model_name": "Qwen 자세 바꾸기 → "
-                            + ("LTX-2.5" if req.engine == "ltx" else "Wan 2.2"),
+                  decision={"action": f"자세 영상 · 자세 {len(keys)}개", "model_name": "Qwen 자세 바꾸기 → Wan 2.2",
                             "keys": [k.model_dump() for k in keys], "keep_start": starts})
         return self._enqueue(job)
 
@@ -1144,23 +976,12 @@ class Engine:
         job.message, job.progress = "영상 만드는 중", 0.6
         timed = list(zip(stills, keys))
         first = req.image_id if job.decision["keep_start"] else timed.pop(0)[0]
-        if req.engine == "ltx":
-            end = next((sid for sid, k in timed if k.at < 0 or k.at >= req.seconds), None)
-            mids = [{"image_id": sid, "at": k.at} for sid, k in timed if sid != end]
-            sub = self._ltx_job(LtxRequest(prompt=req.prompt or "natural movement", image_id=first, end_image_id=end,
-                                           keyframes=mids, seconds=req.seconds,
-                                           quality="540p" if req.quality in ("480p", "540p") else "720p",
-                                           fps=req.fps, audio=req.audio, image_strength=req.image_strength,
+        end = timed[-1][0] if timed else None
+        mid = timed[0][0] if len(timed) == 2 else None
+        sub = self._video_job(VideoRequest(image_id=first, prompt=req.prompt, end_image_id=end, mid_image_id=mid,
+                                           seconds=req.seconds, quality=req.quality, smooth=req.smooth,
                                            negative=req.negative, seed=req.seed))
-            await self._run_ltx(sub)
-        else:
-            end = timed[-1][0] if timed else None
-            mid = timed[0][0] if len(timed) == 2 else None
-            sub = self._video_job(VideoRequest(image_id=first, prompt=req.prompt, end_image_id=end, mid_image_id=mid,
-                                               seconds=min(req.seconds, 10),
-                                               quality="480p" if req.quality == "480p" else "720p",
-                                               smooth=req.smooth, negative=req.negative, seed=req.seed))
-            await self._run_video(sub)
+        await self._run_video(sub)
         job.result_ids += sub.result_ids + stills
         job.result = {"video_id": sub.result_ids[0], "stills": stills}
 
@@ -1725,8 +1546,6 @@ class Engine:
             await self._run_upscale(job)
         elif job.kind == "video":
             await self._run_video(job)
-        elif job.kind == "ltx":
-            await self._run_ltx(job)
         elif job.kind == "frame":
             await self._run_video_frame(job)
         elif job.kind == "readpose":
@@ -2232,14 +2051,10 @@ class Engine:
         e = rec.get("edit") or {}
         if e.get("mode") in ("join", "frame"):
             raise ValueError("이어 붙인 영상이나 꺼낸 장면은 같은 결과라서 다시 만들 필요가 없어요")
+        if rec.get("kind") == "video" and e.get("mode") == "ltx":
+            raise ValueError("LTX 영상 모델은 뺐어요. 원본 이미지에서 '영상 만들기'(Wan 2.2)로 다시 만들어 주세요.")
         if rec.get("kind") == "video" and e.get("request"):
-            r = {**e["request"], "seed": -1}
-            return self.submit_ltx(LtxRequest(**r)) if e.get("mode") == "ltx" else self.submit_video(VideoRequest(**r))
-        if rec.get("kind") == "video" and (rec.get("edit") or {}).get("mode") == "ltx":
-            e = rec["edit"]
-            return self.submit_ltx(LtxRequest(prompt=rec.get("prompt") or " ", image_id=rec.get("parent_id"),
-                                              seconds=e.get("seconds") or 5, quality=e.get("quality") or "720p",
-                                              orientation=e.get("orientation") or "auto", negative=e.get("negative") or ""))
+            return self.submit_video(VideoRequest(**{**e["request"], "seed": -1}))
         if rec.get("kind") == "video" and rec.get("parent_id"):
             e = rec.get("edit") or {}
             return self.submit_video(VideoRequest(image_id=rec["parent_id"], prompt=rec.get("edit_prompt") or "",
