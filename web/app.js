@@ -666,7 +666,7 @@ const Editor = (() => {
   let brushSize = store.get('brush', 40), erasing = false, strength = store.get('strength', 'mid');
   let autoFill = store.get('autoFill', false);
   let detStrength = store.get('detStrength', 0.4), upRefine = store.get('upRefine', true);
-  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '480p'), reposeId = null, vidText = '', reposeText = '';
+  let vidSec = store.get('vidSec', 5), vidQ = store.get('vidQ', '720p'), reposeId = null, vidText = '', reposeText = '';
   $('#reposeIn').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     const fd = new FormData(); fd.append('file', f, f.name);

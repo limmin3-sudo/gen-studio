@@ -147,7 +147,8 @@ class VideoRequest(BaseModel):
     image_id: str
     prompt: str = Field("", description="어떻게 움직일지 (비우면 자연스러운 움직임)")
     seconds: Literal[3, 5] = 5
-    quality: Literal["480p", "720p"] = "480p"
+    quality: Literal["480p", "720p"] = "720p"
+    smooth: bool = Field(True, description="프레임 보간으로 16fps → 32fps (모델이 있을 때)")
     seed: int = -1
 
 
@@ -895,9 +896,11 @@ class Engine:
             raise ValueError("영상 모델(Wan 2.2 I2V)이 없어요. update.bat을 실행해 받아 주세요 (약 31GB).")
         w, h = video_size(src["width"], src["height"], req.quality)
         frames = req.seconds * VIDEO_FPS + 1
+        smooth = req.smooth and self.registry.tool_ready("frame_interp", self.settings.models_dir)
         job = Job(id=uuid.uuid4().hex[:12], kind="video", request=req.model_dump(),
                   decision={"action": f"영상 {req.seconds}초", "model_name": "Wan 2.2 I2V 14B", "family": "wan22_i2v",
-                            "width": w, "height": h, "frames": frames, "fps": VIDEO_FPS})
+                            "width": w, "height": h, "frames": frames, "fps": VIDEO_FPS * (2 if smooth else 1),
+                            "smooth": smooth})
         return self._enqueue(job)
 
     async def _run_video(self, job: Job) -> None:
@@ -928,7 +931,8 @@ class Engine:
         job.message = "영상 만드는 중 (몇 분 걸려요)"
         seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
         files = video_files(self.registry.tools["video_i2v"])
-        graph = workflows.image_to_video(name, files, text, "", d["width"], d["height"], d["frames"], seed, VIDEO_FPS)
+        graph = workflows.image_to_video(name, files, text, "", d["width"], d["height"], d["frames"], seed, VIDEO_FPS,
+                                         interp_file=self.registry.tool_file("frame_interp") if d.get("smooth") else None)
         outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=3 * 3600)
         item = next((o for o in outs if str(o.get("filename", "")).lower().endswith((".mp4", ".webm", ".mov"))), outs[0])
         data = await self.comfy.view(item["filename"], item.get("subfolder", ""))
@@ -936,7 +940,7 @@ class Engine:
         rec = self.library.add_video(data, poster, {
             "kind": "video", "source": "gen-studio", "parent_id": src["id"], "prompt": src.get("prompt", ""),
             "edit_prompt": req.prompt, "final_prompt": text, "model_id": None, "family": "wan22_i2v", "seed": seed,
-            "label": f"영상 {req.seconds}초", "fps": VIDEO_FPS, "frames": d["frames"],
+            "label": f"영상 {req.seconds}초", "fps": d["fps"], "frames": d["frames"] * (2 if d.get("smooth") else 1),
             "duration": round(d["frames"] / VIDEO_FPS, 2),
             "edit": {"mode": "video", "seconds": req.seconds, "quality": req.quality},
         }, ext=ext)

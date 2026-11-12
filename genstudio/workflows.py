@@ -368,7 +368,8 @@ WAN_NEGATIVE = ("色调艳丽，过曝，静态，细节模糊不清，字幕，
 
 
 def image_to_video(image_name: str, files: list[str], prompt: str, negative: str, width: int, height: int,
-                   frames: int, seed: int, fps: int = 16, prefix: str = "gen-studio/video") -> dict:
+                   frames: int, seed: int, fps: int = 16, prefix: str = "gen-studio/video",
+                   interp_file: str | None = None, interp_multiplier: int = 2) -> dict:
     """Wan 2.2 I2V 14B, 4 steps (ComfyUI's official "Image to Video (Wan 2.2)" template).
     files: high, low, text encoder, vae, and optionally the two speed-up LoRAs (high, low) for the official
     weights; tuned models with the speed-up already baked in (e.g. DaSiWa Lightspeed) come without them."""
@@ -397,6 +398,11 @@ def image_to_video(image_name: str, files: list[str], prompt: str, negative: str
               sampler_name="euler", scheduler="simple", positive=out(i2v, 0), negative=out(i2v, 1),
               latent_image=out(a), start_at_step=2, end_at_step=10000, return_with_leftover_noise="disable")
     frames_img = out(g.add("VAEDecode", samples=out(b), vae=v))
+    if interp_file:
+        # FILM fills in frames between Wan's 16 per second (ComfyUI's "Frame Interpolation" template)
+        im = out(g.add("FrameInterpolationModelLoader", model_name=interp_file))
+        frames_img = out(g.add("FrameInterpolate", interp_model=im, images=frames_img, multiplier=int(interp_multiplier)))
+        fps = fps * int(interp_multiplier)
     video = out(g.add("CreateVideo", images=frames_img, fps=float(fps)))
     g.add("SaveVideo", video=video, filename_prefix=prefix, **{"format": "mp4", "format.codec": "auto"})
     return g.nodes

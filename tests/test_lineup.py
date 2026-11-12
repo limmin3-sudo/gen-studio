@@ -65,3 +65,29 @@ def test_pose_uses_controlnet_helper_and_video_has_no_extra_loras(real, fake):
     assert not any(n["class_type"] == "LoraLoaderModelOnly" for n in g.values())
     unets = sorted(n["inputs"]["unet_name"] for n in g.values() if n["class_type"] == "UNETLoader")
     assert unets[0].startswith("DaSiWa_") and "HIGH" in unets[0] and "LOW" in unets[1]
+
+
+def test_wan_video_is_720p_and_smoothed(real, fake):
+    reg = Registry.load(CONFIG_DIR / "models.yaml")
+    assert reg.tools["frame_interp"][0].name == "film_net_fp16.safetensors"
+    img = real.post("/api/import", files={"file": ("p.png", _png(900, 1600), "image/png")}).json()["id"]
+    v = real.post(f"/api/images/{img}/video", json={"prompt": "she smiles"}).json()
+    d = v["decision"]
+    assert d["smooth"] is True and d["fps"] == 32 and abs(d["width"] * d["height"] - 1280 * 720) < 40000
+    v = wait_job(real, v["id"])
+    assert v["status"] == "done", v["error"]
+    g = list(fake.prompts.values())[-1]
+    fi = next(n for n in g.values() if n["class_type"] == "FrameInterpolate")["inputs"]
+    assert fi["multiplier"] == 2
+    assert next(n for n in g.values() if n["class_type"] == "CreateVideo")["inputs"]["fps"] == 32.0
+    # without smoothing: plain 16 fps
+    v2 = wait_job(real, real.post(f"/api/images/{img}/video", json={"prompt": "x", "smooth": False}).json()["id"])
+    g = list(fake.prompts.values())[-1]
+    assert not any(n["class_type"] == "FrameInterpolate" for n in g.values())
+    assert v2["decision"]["fps"] == 16
+
+
+def _png(w, h):
+    b = io.BytesIO()
+    Image.new("RGB", (w, h), (50, 50, 50)).save(b, "PNG")
+    return b.getvalue()

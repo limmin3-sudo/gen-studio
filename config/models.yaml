@@ -188,6 +188,13 @@ tools:
       url: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
       size: 253815318
       sha256: 2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b
+  # 영상 프레임 보간: Wan의 16fps를 32fps로 부드럽게 (ComfyUI 공식 "Frame Interpolation" 템플릿, FILM)
+  frame_interp:
+    - name: film_net_fp16.safetensors
+      dir: frame_interpolation
+      url: https://huggingface.co/Comfy-Org/frame_interpolation/resolve/main/frame_interpolation/film_net_fp16.safetensors
+      size: 68882302
+      sha256: f226e51375dc839d4b40e5c3d63da560dd1ea1c962364ec78f5adf2d05db05c0
   # Codex 전용 고성능 영상: LTX-2.5 22B (영상 + 소리). ComfyUI 공식 "Image/Text to Video (LTX-2.5)" 템플릿과 같은 파일.
   # Hugging Face에서 라이선스 동의 + 토큰이 필요해서 기본 다운로드에는 빠지고, 설정 화면에서 따로 받습니다.
   video_ltx:
