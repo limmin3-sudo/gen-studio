@@ -72,7 +72,12 @@ class Library:
         return rec
 
     def add_video(self, video: bytes, poster_png: bytes, meta: dict, ext: str = ".mp4") -> dict:
-        """A generated clip: the file plus a poster frame for the gallery thumbnail."""
+        """A generated clip: the file plus a poster frame for the gallery thumbnail. Frames, fps and length are
+        read from the saved file when it can be (they can differ from what was asked for)."""
+        from .mp4info import probe
+        info = probe(video)
+        if info:
+            meta = {**meta, "frames": info["frames"], "fps": info["fps"], "duration": info["duration"]}
         iid = meta.get("id") or new_id()
         day = datetime.now().strftime("%Y-%m-%d")
         folder = self.root / day

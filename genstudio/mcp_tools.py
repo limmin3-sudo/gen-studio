@@ -438,9 +438,10 @@ def build_mcp(state: "State") -> MCPServer:
         return await _finish(job, wait_seconds, include_image)
 
     @mcp.tool(description=(
-        "Join clips one after another into one mp4 (2-20 video ids, in order). Later clips are scaled to the first "
-        "one's size; the first clip's fps is used, so join clips made the same way. audio: keep the sound (default: "
-        "only when every clip has sound)."))
+        "Join clips one after another into one mp4 (2-20 video ids, in order). Clips may have different frame "
+        "rates (e.g. Wan 32 fps + LTX 24 fps): the result runs at the highest one and every clip keeps its own "
+        "length and speed. Later clips are scaled to the first one's size. audio: keep the sound (default: when "
+        "any clip has sound; silent clips get silence so sound stays in sync)."))
     async def join_videos(video_ids: list[str], audio: bool | None = None, wait_seconds: int = 60):
         from .jobs import JoinVideosRequest
         job = state.engine.submit_join(JoinVideosRequest(video_ids=video_ids, audio=audio))

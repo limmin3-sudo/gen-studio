@@ -489,22 +489,67 @@ def video_frame(video_name: str, index: int, prefix: str = "gen-studio/frame") -
     return g.nodes
 
 
-def join_videos(video_names: list[str], fps: float, audio: bool, prefix: str = "gen-studio/joined") -> dict:
-    """Clips one after another in one file (later clips are scaled to the first one's size)."""
+def retime_indices(frames: int, src_fps: float, out_fps: float) -> list[int]:
+    """Which source frame to show at each output frame so the clip keeps its length at out_fps
+    (frames are repeated or skipped; same fps = every frame once)."""
+    if abs(src_fps - out_fps) < 1e-6:
+        return list(range(frames))
+    n = max(1, round(frames * out_fps / src_fps))
+    return [min(frames - 1, int(j * src_fps / out_fps + 1e-9)) for j in range(n)]
+
+
+def _runs(idx: list[int]) -> list[tuple[int, int]]:
+    """[0,0,1,2,3,3,4] -> [(0,1), (0,4), (3,2)]: (start, length) pieces of consecutive frames."""
+    runs: list[list[int]] = []
+    for i in idx:
+        if runs and i == runs[-1][0] + runs[-1][1]:
+            runs[-1][1] += 1
+        else:
+            runs.append([i, 1])
+    return [(a, n) for a, n in runs]
+
+
+def _batch(g: "Graph", parts: list) -> list:
+    """BatchImagesNode takes up to 50 inputs: batch in groups, then batch the groups."""
+    while len(parts) > 1:
+        parts = [out(g.add("BatchImagesNode", **{f"images.image{i}": x for i, x in enumerate(parts[k:k + 50])}))
+                 if len(parts[k:k + 50]) > 1 else parts[k] for k in range(0, len(parts), 50)]
+    return parts[0]
+
+
+def join_videos(clips: list[dict], audio: bool, prefix: str = "gen-studio/joined") -> tuple[dict, dict]:
+    """Clips one after another in one file. clips: [{name, frames, fps, audio}].
+
+    The output runs at the highest frame rate among the clips; slower clips get frames repeated (faster ones
+    skipped) so every clip keeps its own length. With sound, each clip's part of the track is cut or padded
+    with silence to exactly that clip's length, so picture and sound stay together. Later clips are scaled to
+    the first one's size. Returns (graph, {fps, frames, duration})."""
     g = Graph()
-    comps = [g.add("GetVideoComponents", video=out(g.add("LoadVideo", file=n))) for n in video_names]
-    images = out(g.add("BatchImagesNode", **{f"images.image{i}": out(c, 0) for i, c in enumerate(comps)}))
-    extra = {}
-    if audio:
-        sound = out(comps[0], 1)
-        for c in comps[1:]:
-            sound = out(g.add("AudioConcat", audio1=out(c, 1), audio2=sound, direction="after"))
-        extra["audio"] = sound
-    video = out(g.add("CreateVideo", images=images, fps=float(fps), **extra))
+    out_fps = max(float(c["fps"]) for c in clips)
+    pieces, sound, total = [], None, 0
+    for c in clips:
+        comp = g.add("GetVideoComponents", video=out(g.add("LoadVideo", file=c["name"])))
+        idx = retime_indices(int(c["frames"]), float(c["fps"]), out_fps)
+        if idx == list(range(int(c["frames"]))):
+            pieces.append(out(comp, 0))
+        else:
+            pieces += [out(g.add("ImageFromBatch", image=out(comp, 0), batch_index=a, length=n)) for a, n in _runs(idx)]
+        total += len(idx)
+        if audio:
+            secs = len(idx) / out_fps
+            silence = out(g.add("EmptyAudio", duration=secs, sample_rate=48000, channels=2))
+            part = silence
+            if c.get("audio"):
+                padded = out(g.add("AudioConcat", audio1=out(comp, 1), audio2=silence, direction="after"))
+                part = out(g.add("TrimAudioDuration", audio=padded, start_index=0.0, duration=secs))
+            sound = part if sound is None else out(g.add("AudioConcat", audio1=sound, audio2=part, direction="after"))
+    images = _batch(g, pieces)
+    extra = {"audio": sound} if audio else {}
+    video = out(g.add("CreateVideo", images=images, fps=out_fps, **extra))
     g.add("SaveVideo", video=video, filename_prefix=prefix, **{"format": "mp4", "format.codec": "auto"})
     g.add("SaveImage", filename_prefix=prefix + "-poster",
           images=out(g.add("ImageFromBatch", image=images, batch_index=0, length=1)))
-    return g.nodes
+    return g.nodes, {"fps": out_fps, "frames": total, "duration": round(total / out_fps, 3)}
 
 
 def ltx_video(prompt: str, files: dict, width: int, height: int, seconds: int, seed: int, *,

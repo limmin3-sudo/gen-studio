@@ -140,4 +140,4 @@ def test_wan_keyframes_and_knobs(real, fake):
     assert sum(n["class_type"] == "LoadVideo" for n in g.values()) == 2
     assert not any(n["class_type"] == "AudioConcat" for n in g.values())                      # Wan clips are silent
     joined = real.get(f"/api/images/{j['result_ids'][0]}").json()
-    assert joined["media"] == "video" and joined["joined"] == [clip1, clip2] and joined["duration"] == 20.0
+    assert joined["media"] == "video" and joined["joined"] == [clip1, clip2] and joined["duration"] == 20.125

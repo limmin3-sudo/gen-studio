@@ -1042,6 +1042,17 @@ class Engine:
             raise ValueError(f"영상이 아니에요: {vid}")
         return rec
 
+    def _clip_info(self, rec: dict) -> dict:
+        """Frames, fps and sound of the saved file itself (what a player shows); the record as a fallback."""
+        from .mp4info import probe_file
+        path = self.library.path(rec["id"])
+        info = probe_file(path) if path else None
+        if info:
+            return info
+        fps = float(rec.get("fps") or VIDEO_FPS)
+        frames = int(rec.get("frames") or round((rec.get("duration") or 1) * fps) + 1)
+        return {"frames": frames, "fps": fps, "duration": round(frames / fps, 3), "audio": bool(rec.get("audio"))}
+
     async def _upload_clip(self, rec: dict) -> str:
         path = self.library.path(rec["id"])
         if not path:
@@ -1051,8 +1062,8 @@ class Engine:
 
     def submit_video_frame(self, req: VideoFrameRequest) -> Job:
         rec = self._need_clip(req.video_id)
-        fps = rec.get("fps") or VIDEO_FPS
-        frames = rec.get("frames") or 0
+        info = self._clip_info(rec)
+        fps, frames = info["fps"], info["frames"]
         if req.at == "first":
             idx = 0
         elif req.at == "last" or float(req.at) < 0:
@@ -1071,7 +1082,7 @@ class Engine:
         rec = self._need_clip(req.video_id)
         idx = job.decision["index"]
         if idx == -1:
-            idx = max(0, (rec.get("frames") or 1) - 1)
+            idx = max(0, self._clip_info(rec)["frames"] - 1)
         name = await self._upload_clip(rec)
         outs = await self.comfy.run(workflows.video_frame(name, idx), self._progress(job, 0, 1))
         data = await self.comfy.view(outs[0]["filename"], outs[0].get("subfolder", ""))
@@ -1084,22 +1095,24 @@ class Engine:
 
     def submit_join(self, req: JoinVideosRequest) -> Job:
         recs = [self._need_clip(v) for v in req.video_ids]
-        audio = all(r.get("audio") for r in recs) if req.audio is None else req.audio
-        fps = recs[0].get("fps") or VIDEO_FPS
-        total = sum((r.get("duration") or 0) for r in recs)
+        infos = [self._clip_info(r) for r in recs]
+        audio = any(i["audio"] for i in infos) if req.audio is None else req.audio
+        fps = max(i["fps"] for i in infos)
+        frames = sum(len(workflows.retime_indices(i["frames"], i["fps"], fps)) for i in infos)
         job = Job(id=uuid.uuid4().hex[:12], kind="join", request=req.model_dump(),
                   decision={"action": f"영상 {len(recs)}개 이어 붙이기", "model_name": "-", "fps": fps,
                             "audio": audio, "width": recs[0]["width"], "height": recs[0]["height"],
-                            "duration": round(total, 2)})
+                            "frames": frames, "duration": round(frames / fps, 3),
+                            "clips": [{"id": r["id"], **i} for r, i in zip(recs, infos)]})
         return self._enqueue(job)
 
     async def _run_join(self, job: Job) -> None:
         req = JoinVideosRequest(**job.request)
         d = job.decision
         recs = [self._need_clip(v) for v in req.video_ids]
-        names = [await self._upload_clip(r) for r in recs]
-        outs = await self.comfy.run(workflows.join_videos(names, d["fps"], d["audio"]), self._progress(job, 0, 1),
-                                    timeout=3600)
+        clips = [{**c, "name": await self._upload_clip(r)} for r, c in zip(recs, d["clips"])]
+        graph, plan = workflows.join_videos(clips, d["audio"])
+        outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=3600)
         clip = next((o for o in outs if str(o.get("filename", "")).lower().endswith((".mp4", ".webm", ".mov"))), None)
         poster_item = next((o for o in outs if str(o.get("filename", "")).lower().endswith(".png")), None)
         if not clip:
@@ -1115,8 +1128,8 @@ class Engine:
         rec = self.library.add_video(data, poster, {
             "kind": "video", "source": "gen-studio", "parent_id": first["id"], "prompt": first.get("prompt", ""),
             "edit_prompt": "", "final_prompt": first.get("final_prompt", ""), "model_id": None,
-            "family": first.get("family"), "label": f"이어 붙인 영상 ({len(recs)}개)", "fps": d["fps"],
-            "frames": sum((r.get("frames") or 0) for r in recs) or None, "duration": d["duration"],
+            "family": first.get("family"), "label": f"이어 붙인 영상 ({len(recs)}개)", "fps": plan["fps"],
+            "frames": plan["frames"], "duration": plan["duration"],
             "audio": d["audio"], "joined": req.video_ids, "edit": {"mode": "join", "video_ids": req.video_ids},
         }, ext="." + clip["filename"].rsplit(".", 1)[-1].lower())
         job.result_ids.append(rec["id"])
