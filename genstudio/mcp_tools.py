@@ -40,6 +40,8 @@ INSTRUCTIONS = """Gen Studio runs image models on the user's own GPU (no paid AP
   shots + description); create_character(name, image ids or paths) saves existing pictures as one.
   Then generate_image(character=name, ...) keeps the same face and outfit across scenes (tutorials, series).
 - change_pose(image_id, pose_id or prompt) moves the person into a new pose, same person and background.
+- create_video(prompt, image_id=None, seconds=5) is the high-quality one: LTX-2.5 with sound, from text or an
+  image. Prefer it for finished clips; write a detailed English shot description including the audio.
 - image_to_video(image_id, prompt="how it moves") makes a 3-5 s mp4 clip (several minutes).
 - upscale_image(image_id, scale=2|4) makes a 2K/4K version.
 - fix_details(image_id, targets=["face","eyes","hands"]) sharpens small faces/hands (after full-body shots).
@@ -330,6 +332,33 @@ def build_mcp(state: "State") -> MCPServer:
             pose_id = _bring_in(None, [pose_path])[0]
         job = state.engine.submit_repose(ReposeRequest(image_id=image_id, pose=pose_id, prompt=prompt))
         return await _finish(job, wait_seconds, include_image)
+
+    @mcp.tool(description=(
+        "High-quality video WITH SOUND (LTX-2.5 22B) from a text prompt, or from an image (image_id / image_path) "
+        "as the first shot. Slow (several minutes to tens of minutes on the home GPU) but much better than "
+        "image_to_video. Write the prompt like a shot description in English: subject and look, action beat by beat, "
+        "camera (angle, lens, movement), lighting, mood, and the sound (dialogue in quotes with who says it, "
+        "ambience, effects, music). seconds 2-10, quality 540p/720p, orientation auto/landscape/portrait/square. "
+        "Returns a job_id: poll get_job_status; the finished mp4 path is in the result (export_image copies it)."))
+    async def create_video(prompt: str, image_id: str | None = None, image_path: str | None = None, seconds: int = 5,
+                           quality: str = "720p", orientation: str = "auto", negative: str = "", seed: int = -1,
+                           wait_seconds: int = 30):
+        from .jobs import LtxRequest
+        if image_path and not image_id:
+            image_id = _bring_in(None, [image_path])[0]
+        job = state.engine.submit_ltx(LtxRequest(
+            prompt=prompt, image_id=image_id, seconds=max(2, min(int(seconds), 10)),
+            quality="540p" if str(quality).startswith("540") else "720p",
+            orientation=orientation if orientation in ("auto", "landscape", "portrait", "square") else "auto",
+            negative=negative, seed=seed))
+        job = await state.engine.wait(job.id, max(0, min(wait_seconds, 600)))
+        out = {"job_id": job.id, "status": job.status, "message": job.message, "error": job.error,
+               "decision": job.decision}
+        if job.status == "done":
+            out["video"] = _info(job.result_ids[0])
+        else:
+            out["next"] = "오래 걸려요. get_job_status(job_id, wait_seconds=60)로 가끔 확인하세요."
+        return out
 
     @mcp.tool(description=(
         "Turn an image into a short video clip (Wan 2.2 image-to-video). prompt: how things move, e.g. 'she turns "

@@ -146,6 +146,15 @@ class Library:
         if not src:
             raise KeyError("이미지를 찾을 수 없어요")
         dest = Path(dest).expanduser()
+        if (self._items.get(iid) or {}).get("media") == "video":
+            import shutil
+            if not dest.suffix:
+                dest = dest.with_suffix(src.suffix)
+            if dest.exists() and not overwrite:
+                raise ValueError(f"이미 파일이 있어요: {dest} (덮어쓰려면 overwrite)")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            return {"path": str(dest), "format": dest.suffix.lstrip("."), "bytes": dest.stat().st_size}
         fmt = (fmt or dest.suffix.lstrip(".") or "png").lower().replace("jpeg", "jpg")
         if fmt not in ("png", "webp", "jpg"):
             raise ValueError("형식은 png, webp, jpg 중 하나예요")

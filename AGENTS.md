@@ -15,7 +15,9 @@ engine; this repo is the orchestrator + web UI + desktop app + MCP server. UI te
   training, detail pass, desktop app (`desktop.py`, `runtime.py`), MCP tools (`mcp_tools.py`, panel `panel.html`).
 - `web/` — single-page UI (no build step): `index.html`, `app.js`, `style.css`.
 - `config/models.yaml` — the real model lineup (RedCraft QW21 = realistic main, PornMaster Z-Image = helper for
-  detail/upscale/pose/training, Illustrij = semi-real, DaSiWa Wan 2.2 I2V = video) plus tool files.
+  detail/upscale/pose/training, Illustrij = semi-real, DaSiWa Wan 2.2 I2V = quick video) plus tool files.
+  `optional_tools` (LTX-2.5 22B, Codex's high-quality video with sound, gated on Hugging Face) are only downloaded
+  from the settings screen.
 - `scripts/` — installer, downloader, updater (run by the app's update button), Codex registration, shortcuts.
 
 ## Working on it

@@ -495,9 +495,10 @@ const Settings = (() => {
   async function load() {
     try {
       info = await api.get('/api/app/info');
-      [info.unused, info.added, info.library] = await Promise.all([api.get('/api/app/models/unused').catch(() => null),
+      [info.unused, info.added, info.library, info.ltx] = await Promise.all([api.get('/api/app/models/unused').catch(() => null),
                                                     api.get('/api/app/models/added').then(r => r.models).catch(() => []),
-                                                    api.get('/api/app/library').catch(() => null)]);
+                                                    api.get('/api/app/library').catch(() => null),
+                                                    api.get('/api/app/ltx').catch(() => null)]);
     }
     catch (e) { body.innerHTML = `<div class="scard"><h3>설정은 PC에서만</h3><p class="hint">${esc(e.message)}</p></div>`; return; }
     paint();
@@ -561,6 +562,19 @@ const Settings = (() => {
     const codex = `<p>${info.codex.connected ? '<i class="dot ok"></i> 연결돼 있어요' : '<i class="dot"></i> 아직 연결 안 됨'}</p>
       <div class="row"><button class="btn ${info.codex.connected ? '' : 'primary'}" data-act="codex">${info.codex.connected ? '다시 연결' : 'Codex에 연결하기'}</button></div>
       <p class="hint">연결한 뒤 Codex 앱을 완전히 껐다 켜면 "Gen Studio" 도구가 보여요. 주소: ${esc(info.codex.url)}</p>`;
+    const lx = info.ltx;
+    const ltxHtml = !lx ? '' : lx.ready
+      ? `<p><i class="dot ok"></i> 준비됐어요. Codex에게 "LTX로 영상 만들어줘"라고 하면 소리까지 있는 영상을 만들어요.</p>
+         <p class="hint">Codex의 create_video 도구로만 써요. 한 편에 수 분~수십 분 걸리고, 그동안 다른 작업은 기다려요.</p>`
+      : `<p>Codex가 쓰는 고성능 영상 모델이에요(영상 + 소리, 최대 10초). 받는 파일이 커서(약 40GB) 따로 받아요.</p>
+         <ol class="steps">
+           <li><a href="${esc(lx.license_url)}" target="_blank" rel="noopener">Hugging Face LTX-2.5 페이지</a>에서 로그인하고 라이선스에 동의하세요.</li>
+           <li>Hugging Face → Settings → Access Tokens에서 <b>Read</b> 토큰을 만들어 아래에 붙여넣으세요. ${lx.hf_token ? '<b>(저장돼 있어요 ✓)</b>' : ''}</li>
+           <li><b>받기</b>를 누르면 위 "모델" 칸에 진행 상황이 나와요.</li>
+         </ol>
+         <div class="row"><input id="hfToken" type="password" placeholder="hf_로 시작하는 토큰"><button class="btn" data-act="hf-token">저장</button></div>
+         <div class="row"><button class="btn primary" data-act="ltx-dl" ${lx.hf_token && !info.downloads.running ? '' : 'disabled'}>받기</button>
+           <span class="hint">${lx.files.filter(f => f.present).length}/${lx.files.length}개 받음</span></div>`;
     const lib = info.library;
     const libHtml = lib ? `<p>이미지·영상 <b>${lib.count}개</b> · ${human(lib.bytes + lib.comfy_bytes)} <span class="hint">(ComfyUI 사본 ${human(lib.comfy_bytes)} 포함)</span></p>
       <p class="hint">저장 폴더: ${esc(lib.folder)}</p>
@@ -570,7 +584,7 @@ const Settings = (() => {
       <p class="hint">문제가 생기면 진단 정보를 복사해 대화창에 붙여넣어 주세요. 로그: ${esc(info.logs)}</p>`;
     body.innerHTML = [
       card('업데이트', (info.last_error ? `<p class="warn">지난 업데이트 실패: ${esc(info.last_error)}</p>` : '') + upd),
-      card('모델', models + addHtml + unusedHtml), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('저장된 이미지', libHtml), card('문제 해결', help),
+      card('모델', models + addHtml + unusedHtml), card('ComfyUI', comfy), card('원격 접속', remote), card('Codex', codex), card('Codex 전용 고성능 영상 (LTX-2.5)', ltxHtml), card('저장된 이미지', libHtml), card('문제 해결', help),
     ].join('');
   }
   body.addEventListener('change', async e => {
@@ -588,6 +602,8 @@ const Settings = (() => {
         if (info.downloads.running && b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = '받는 중인 모델은 멈췄다 이어 받아요. 한 번 더 누르면 업데이트'; return; }
         const r = await api.post('/api/app/update'); toast(r.message, 15000); b.disabled = true; return;
       }
+      if (act === 'hf-token') { await api.post('/api/app/hf-token', {token: $('#hfToken').value}); toast('토큰을 저장했어요'); return load(); }
+      if (act === 'ltx-dl') { await api.post('/api/app/models/download', {tools: ['video_ltx']}); toast('LTX-2.5 받기를 시작했어요'); return load(); }
       if (act === 'lib-clear') {
         const n = info.library.count;
         if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = `정말 ${n}개를 전부 지울까요? 한 번 더 누르기`; return; }

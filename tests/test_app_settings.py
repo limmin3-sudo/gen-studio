@@ -122,3 +122,50 @@ def test_clear_all_pictures(client, settings, fake, tmp_path):
     # works again afterwards
     j = wait_job(client, client.post("/api/generate", json={"prompt": "photo"}).json()["id"])
     assert j["status"] == "done" and client.get(f"/api/images/{j['result_ids'][0]}/thumb").status_code == 200
+
+
+def test_ltx_video_for_codex(client, settings, fake, monkeypatch, tmp_path):
+    """Optional download; once the files are there Codex's create_video makes an mp4 with sound + a poster."""
+    from test_api import wait_job
+    from genstudio.config import CONFIG_DIR
+    from genstudio.registry import Registry
+    monkeypatch.setattr("genstudio.config.SECRETS_FILE", tmp_path / "secrets.json")
+    reg = Registry.load(CONFIG_DIR / "models.yaml")
+    eng = client.app.state.gs.engine
+    eng.registry.tools["video_ltx"] = reg.tools["video_ltx"]
+    eng.registry.optional_tools = reg.optional_tools
+    settings.comfy_path = tmp_path / "ComfyUI"
+    r = client.get("/api/app/ltx").json()
+    assert r["ready"] is False and r["hf_token"] is False and len(r["files"]) == 5
+    assert client.post("/api/app/hf-token", json={"token": "nope"}).status_code == 400
+    assert client.post("/api/app/hf-token", json={"token": "hf_" + "x" * 30}).json()["ok"]
+    assert client.get("/api/app/ltx").json()["hf_token"] is True
+    # not part of the normal "모두 받기" list
+    assert not any("ltx-2.5" in m["file"] for m in client.get("/api/app/info").json()["models"]["missing"])
+    assert client.post("/api/ltx", json={"prompt": "x"}).status_code == 400            # files not there yet
+    for f in reg.tools["video_ltx"]:
+        f.path(settings.models_dir).parent.mkdir(parents=True, exist_ok=True)
+        f.path(settings.models_dir).write_bytes(b"x")
+    assert client.get("/api/app/ltx").json()["ready"] is True
+
+    j = wait_job(client, client.post("/api/ltx", json={"prompt": 'A rainy neon street. She says "let us go".',
+                                                        "seconds": 4, "orientation": "portrait"}).json()["id"])
+    assert j["status"] == "done", j["error"]
+    assert (j["decision"]["width"], j["decision"]["height"]) == (704, 1280) and j["decision"]["frames"] == 97
+    g = list(fake.prompts.values())[-1]
+    kinds = [n["class_type"] for n in g.values()]
+    assert kinds.count("SamplerCustomAdvanced") == 2 and "LTXVLatentUpsampler" in kinds and "LTXVAudioVAEDecode" in kinds
+    assert "LTXVImgToVideoInplace" not in kinds                                           # text only
+    empty = next(n for n in g.values() if n["class_type"] == "EmptyLTXVLatentVideo")["inputs"]
+    assert (empty["width"], empty["height"], empty["length"]) == (352, 640, 97)
+    rec = client.get(f"/api/images/{j['result_ids'][0]}").json()
+    assert rec["media"] == "video" and rec["audio"] is True and rec["label"] == "LTX 영상 4초" and rec["parent_id"] is None
+    assert client.get(f"/api/images/{rec['id']}/thumb").status_code == 200
+
+    # from a picture: it is put back in both passes; regenerate repeats the same request
+    img = wait_job(client, client.post("/api/generate", json={"prompt": "photo", "aspect": "landscape"}).json()["id"])["result_ids"][0]
+    j2 = wait_job(client, client.post("/api/ltx", json={"prompt": "she waves", "image_id": img}).json()["id"])
+    g = list(fake.prompts.values())[-1]
+    assert [n["inputs"]["strength"] for n in g.values() if n["class_type"] == "LTXVImgToVideoInplace"] == [0.7, 1.0]
+    r2 = wait_job(client, client.post(f"/api/images/{j2['result_ids'][0]}/regenerate").json()["id"])
+    assert r2["kind"] == "ltx" and r2["status"] == "done"

@@ -142,12 +142,34 @@ def register(app: FastAPI, state) -> None:
                 "config": str(CODEX_CONFIG)}
 
     @app.post("/api/app/models/download")
-    async def app_models_download(request: Request):
+    async def app_models_download(request: Request, body: dict | None = None):
         local_only(request)
+        tools = [t for t in (body or {}).get("tools") or [] if t in state.registry.tools]
         try:
-            return downloads.start()
+            return downloads.start(tools or None)
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    @app.get("/api/app/ltx")
+    async def app_ltx(request: Request):
+        """Codex's LTX-2.5 video model: which files are here, whether a Hugging Face token is saved."""
+        local_only(request)
+        from .config import get_secret
+        files = state.registry.tools.get("video_ltx", [])
+        md = s.models_dir
+        return {"ready": state.registry.tool_ready("video_ltx", md),
+                "files": [{"name": f.name, "dir": f.dir, "present": bool(md and f.path(md).exists())} for f in files],
+                "hf_token": bool(get_secret("hf_token", "HF_TOKEN")),
+                "license_url": "https://huggingface.co/Lightricks/LTX-2.5"}
+
+    @app.post("/api/app/hf-token")
+    async def app_hf_token(body: dict, request: Request):
+        local_only(request)
+        tok = str(body.get("token") or "").strip()
+        if not tok.startswith("hf_") or len(tok) < 20:
+            raise HTTPException(400, "Hugging Face 토큰은 hf_ 로 시작해요")
+        write_secret("hf_token", tok)
+        return {"ok": True}
 
     @app.get("/api/app/library")
     async def app_library(request: Request):

@@ -168,9 +168,39 @@ def video_files(specs) -> list[str]:
     return out + [lh, ll] if lh and ll else out
 
 
+def ltx_files(specs) -> list[str]:
+    """[transformer, text encoder, video vae, audio vae, upscaler] from the tool's file list, whatever its order."""
+    def pick(cond):
+        return next((f.name for f in specs if cond(f)), None)
+    return [pick(lambda f: f.dir == "diffusion_models"), pick(lambda f: f.dir == "text_encoders"),
+            pick(lambda f: f.dir == "vae" and "audio" not in f.name), pick(lambda f: f.dir == "vae" and "audio" in f.name),
+            pick(lambda f: f.dir == "latent_upscale_models")]
+
+
 def video_size(w: int, h: int, quality: str) -> tuple[int, int]:
     k = (VIDEO_AREA[quality] / (w * h)) ** 0.5
     return max(256, round(w * k / 16) * 16), max(256, round(h * k / 16) * 16)
+
+
+class LtxRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="장면·움직임·카메라·소리(대사, 효과음, 음악)까지 자세히")
+    image_id: str | None = Field(None, description="첫 장면으로 쓸 이미지 (없으면 글만으로 만듦)")
+    seconds: int = Field(5, ge=2, le=10)
+    quality: Literal["540p", "720p"] = "720p"
+    orientation: Literal["auto", "landscape", "portrait", "square"] = "auto"
+    negative: str = ""
+    seed: int = -1
+
+
+LTX_AREA = {"540p": 960 * 544, "720p": 1280 * 720}
+LTX_SHAPES = {"landscape": (16, 9), "portrait": (9, 16), "square": (1, 1)}
+LTX_FPS = 24
+
+
+def ltx_size(w: int, h: int, quality: str) -> tuple[int, int]:
+    """Same picture shape, about 0.5MP (540p) or 0.9MP (720p); multiples of 64 so the half-size first pass fits."""
+    k = (LTX_AREA[quality] / (w * h)) ** 0.5
+    return max(256, round(w * k / 64) * 64), max(256, round(h * k / 64) * 64)
 
 
 class UpscaleRequest(BaseModel):
@@ -788,6 +818,73 @@ class Engine:
         if rec and rec.get("media") == "video":
             raise ValueError("영상은 편집할 수 없어요. 영상을 만든 원본 이미지에서 작업해 주세요.")
 
+    # ------------------------------------------------------------ LTX-2.5: Codex's high-quality video with sound
+    def submit_ltx(self, req: LtxRequest) -> Job:
+        if not self.registry.tool_ready("video_ltx", self.settings.models_dir):
+            raise ValueError("LTX-2.5 영상 모델이 없어요. Gen Studio 설정 → 'Codex 전용 고성능 영상'에서 받아 주세요.")
+        if req.image_id:
+            src = self.library.get(req.image_id)
+            if not src:
+                raise KeyError("이미지를 찾을 수 없어요")
+            self._need_still(req.image_id)
+            w, h = src["width"], src["height"]
+            if req.orientation != "auto":
+                w, h = LTX_SHAPES[req.orientation]
+        else:
+            w, h = LTX_SHAPES["landscape" if req.orientation == "auto" else req.orientation]
+        w, h = ltx_size(w, h, req.quality)
+        job = Job(id=uuid.uuid4().hex[:12], kind="ltx", request=req.model_dump(),
+                  decision={"action": f"LTX 영상 {req.seconds}초", "model_name": "LTX-2.5 22B (영상+소리)",
+                            "family": "ltx", "width": w, "height": h, "frames": req.seconds * LTX_FPS + 1,
+                            "fps": LTX_FPS, "mode": "image" if req.image_id else "text"})
+        return self._enqueue(job)
+
+    async def _run_ltx(self, job: Job) -> None:
+        req = LtxRequest(**job.request)
+        d = job.decision
+        w, h = d["width"], d["height"]
+        src = self.library.get(req.image_id) if req.image_id else None
+        image_name = None
+        if src:
+            with Image.open(self.library.path(src["id"])) as im:
+                im = im.convert("RGB")
+                s = max(w / im.width, h / im.height)              # cover the frame, crop the overflow
+                im = im.resize((round(im.width * s), round(im.height * s)), Image.LANCZOS)
+                x, y = (im.width - w) // 2, (im.height - h) // 2
+                im = im.crop((x, y, x + w, y + h))
+                buf = io.BytesIO()
+                im.save(buf, "PNG")
+            image_name = await self.comfy.upload_image(buf.getvalue(), f"ltx-start-{src['id']}-{w}x{h}.png")
+        await self.comfy.free()                                   # a 22B model and a 12B text encoder: start clean
+        self._last_family = None
+        job.message = "LTX 영상 만드는 중 (수 분~수십 분)"
+        files = dict(zip(("transformer", "text_encoder", "video_vae", "audio_vae", "upscaler"),
+                         ltx_files(self.registry.tools["video_ltx"])))
+        seed = req.seed if req.seed >= 0 else random.randint(0, 2**31 - 1)
+        graph = workflows.ltx_video(req.prompt.strip(), files, w, h, req.seconds, seed, image_name=image_name,
+                                    negative=req.negative, fps=LTX_FPS)
+        outs = await self.comfy.run(graph, self._progress(job, 0, 1), timeout=4 * 3600)
+        clip = next((o for o in outs if str(o.get("filename", "")).lower().endswith((".mp4", ".webm", ".mov"))), None)
+        poster_item = next((o for o in outs if str(o.get("filename", "")).lower().endswith(".png")), None)
+        if not clip:
+            raise ComfyError("영상 파일이 저장되지 않았어요")
+        data = await self.comfy.view(clip["filename"], clip.get("subfolder", ""))
+        poster = await self.comfy.view(poster_item["filename"], poster_item.get("subfolder", "")) if poster_item else None
+        if poster is None:
+            buf = io.BytesIO()
+            Image.new("RGB", (w, h), (20, 20, 20)).save(buf, "PNG")
+            poster = buf.getvalue()
+        await self.comfy.free()
+        rec = self.library.add_video(data, poster, {
+            "kind": "video", "source": "gen-studio", "parent_id": src["id"] if src else None,
+            "prompt": req.prompt, "edit_prompt": req.prompt, "final_prompt": req.prompt, "model_id": None,
+            "family": "ltx", "seed": seed, "label": f"LTX 영상 {req.seconds}초", "fps": LTX_FPS,
+            "frames": d["frames"], "duration": round(d["frames"] / LTX_FPS, 2), "audio": True,
+            "edit": {"mode": "ltx", "seconds": req.seconds, "quality": req.quality, "orientation": req.orientation,
+                     "negative": req.negative},
+        }, ext="." + clip["filename"].rsplit(".", 1)[-1].lower())
+        job.result_ids.append(rec["id"])
+
     def submit_video(self, req: VideoRequest) -> Job:
         src = self.library.get(req.image_id)
         if not src:
@@ -1252,6 +1349,8 @@ class Engine:
                     await self._run_upscale(job)
                 elif job.kind == "video":
                     await self._run_video(job)
+                elif job.kind == "ltx":
+                    await self._run_ltx(job)
                 elif job.kind == "repose":
                     await self._run_repose(job)
                 else:
@@ -1706,6 +1805,11 @@ class Engine:
                             if not rec.get("character") or r not in (self.characters.get(rec["character"]) or {}).get("ref_ids", [])],
                 character=rec.get("character"), loras=rec.get("loras") or [], denoise=rec.get("denoise"),
                 regions=rec.get("regions") or [], pose=rec.get("pose_id"), pose_strength=rec.get("pose_strength") or 0.85))
+        if rec.get("kind") == "video" and (rec.get("edit") or {}).get("mode") == "ltx":
+            e = rec["edit"]
+            return self.submit_ltx(LtxRequest(prompt=rec.get("prompt") or " ", image_id=rec.get("parent_id"),
+                                              seconds=e.get("seconds") or 5, quality=e.get("quality") or "720p",
+                                              orientation=e.get("orientation") or "auto", negative=e.get("negative") or ""))
         if rec.get("kind") == "video" and rec.get("parent_id"):
             e = rec.get("edit") or {}
             return self.submit_video(VideoRequest(image_id=rec["parent_id"], prompt=rec.get("edit_prompt") or "",

@@ -231,9 +231,11 @@ class Downloads:
         return [{"label": label, "file": f.name, "dir": f.dir, "size": f.size or 0, "civitai": bool(f.civitai_version)}
                 for label, f, ok in plan(self.reg, self.s.models_dir) if not ok]
 
-    def start(self) -> dict:
+    def start(self, tools: list[str] | None = None) -> dict:
+        """Fetch what's missing; with `tools`, just those (e.g. the optional LTX video files)."""
         if self.state.get("running"):
             return self.state
+        self._tools = tools
         if not self.s.models_dir:
             raise ValueError("config/settings.yaml 의 comfyui path가 비어 있어요")
         self._stop.clear()
@@ -250,7 +252,7 @@ class Downloads:
         from .downloader import UA, civitai_key, download, plan
         st = self.state
         try:
-            todo = [f for _l, f, ok in plan(self.reg, self.s.models_dir) if not ok]
+            todo = [f for _l, f, ok in plan(self.reg, self.s.models_dir, tools=getattr(self, "_tools", None)) if not ok]
             key = civitai_key(interactive=False)
             if any(f.civitai_version for f in todo) and not key:
                 st["error"] = "Civitai 모델을 받으려면 API 키가 필요해요. 아래에 넣어 주세요."

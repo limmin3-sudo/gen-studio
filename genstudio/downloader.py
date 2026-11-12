@@ -121,15 +121,21 @@ def download(f: FileSpec, dest: Path, client: httpx.Client, key: str | None, ver
     os.replace(part, dest)
 
 
-def plan(reg: Registry, models_dir: Path, model_ids: list[str] | None = None, include_optional: bool = False):
-    """[(label, FileSpec, installed)] for the chosen models plus every tool, each file once."""
-    if model_ids:
-        chosen = [reg.get(m) for m in model_ids]
+def plan(reg: Registry, models_dir: Path, model_ids: list[str] | None = None, include_optional: bool = False,
+         tools: list[str] | None = None):
+    """[(label, FileSpec, installed)] for the chosen models plus every tool, each file once.
+    Optional tools (reg.optional_tools) only when named in `tools`; with `tools` alone, only those tools."""
+    optional = getattr(reg, "optional_tools", set())
+    if tools:
+        groups = [(f"도구: {name}", reg.tools[name]) for name in tools if name in reg.tools]
     else:
-        chosen = [m for m in reg.models if include_optional or not m.optional or m.installed(models_dir)]
-    groups = [(m.name, m.all_files()) for m in chosen]
-    if not model_ids:
-        groups += [(f"도구: {name}", files) for name, files in reg.tools.items()]
+        if model_ids:
+            chosen = [reg.get(m) for m in model_ids]
+        else:
+            chosen = [m for m in reg.models if include_optional or not m.optional or m.installed(models_dir)]
+        groups = [(m.name, m.all_files()) for m in chosen]
+        if not model_ids:
+            groups += [(f"도구: {name}", files) for name, files in reg.tools.items() if name not in optional]
     out, seen = [], set()
     for label, files in groups:
         for f in files:

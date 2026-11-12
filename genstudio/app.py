@@ -16,7 +16,7 @@ from .app_routes import set_remote  # noqa: F401  (used by the desktop tray)
 from .comfy import ComfyClient, ComfyError
 from .config import ROOT, Settings, access_token, load_settings
 from .training import TrainRequest
-from .jobs import CharacterBuildRequest, CutoutRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
+from .jobs import CharacterBuildRequest, CutoutRequest, LtxRequest, ReposeRequest, UpscaleRequest, VideoRequest, EditRequest, Engine, GenerateRequest, SegmentRequest
 from .library import Library
 from .registry import Registry
 from .security import TokenGate
@@ -278,6 +278,13 @@ def create_app(settings: Settings | None = None, *, comfy_transport: httpx.Async
             return library.export(image_id, Path(body["path"]), body.get("format"), body.get("max_side"),
                                   body.get("width"), body.get("height"), int(body.get("quality", 90)),
                                   bool(body.get("overwrite", False)))
+        except KeyError as e:
+            raise HTTPException(404, str(e).strip("'"))
+
+    @app.post("/api/ltx")
+    async def ltx(body: dict):
+        try:
+            return engine.submit_ltx(LtxRequest(**body)).public()
         except KeyError as e:
             raise HTTPException(404, str(e).strip("'"))
 
